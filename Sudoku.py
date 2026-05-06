@@ -11,6 +11,31 @@ import os
 import pickle
 import threading
 import urllib.request
+
+# ── ML continuous-improvement helpers ────────────────────────────────────────
+_ml_retrain_lock = threading.Lock()   # prevent concurrent retrains
+
+def _ml_schedule_retrain(ml_instance):
+    """
+    Jalankan retrain semua model di background thread setelah sesi disimpan.
+    Menggunakan lock agar tidak ada dua retrain berjalan bersamaan.
+    Dipanggil SETELAH save_data() agar _ml_all_sessions() membaca data terbaru.
+    """
+    def _do():
+        if not _ml_retrain_lock.acquire(blocking=False):
+            return  # sudah ada retrain berjalan, lewati
+        try:
+            # 1. Retrain base models (KNN, LR, IsolationForest)
+            ml_instance._models_dirty = True
+            ml_instance._train_models()
+            # 2. Retrain RFC + Multi dengan data terbaru dari semua pemain
+            ml_instance._ml_dirty = True
+            ml_instance._train_ml_models(force=True)
+        except Exception:
+            pass
+        finally:
+            _ml_retrain_lock.release()
+    threading.Thread(target=_do, daemon=True).start()
 import http.cookiejar
 import re
 
@@ -865,7 +890,7 @@ class PlayerMLEngine:
         self._models_dirty = False
         n = len(self.sessions)
 
-        # ── 1. KNN: gabung sintetis + aktual ─────────────────────────
+        # ── 1. KNN: gabung sintetis + aktual (semua pemain) ──────────
         # Jika ada data aktual, selalu retrain agar model up-to-date.
         # Jika tidak ada data aktual, coba load dari KNN.pkl dulu.
         if n == 0:
@@ -879,11 +904,24 @@ class PlayerMLEngine:
                 X_syn = np.array(_KNN_SYNTHETIC_X, dtype=float)
                 y_syn = np.array(_KNN_SYNTHETIC_Y, dtype=int)
 
-                feats_actual = [self._session_to_vector(s) for s in self.sessions]
+                # Kumpulkan sesi dari SEMUA pemain untuk memperkaya training data
+                all_sessions = list(self.sessions)
+                try:
+                    _all_data = load_data()
+                    for _payload in _all_data.get("players", {}).values():
+                        for _s in _payload.get("sessions", []):
+                            # Tambah hanya jika belum ada (hindari duplikat sesi pemain aktif)
+                            _fp = _session_fingerprint(_s)
+                            if not any(_session_fingerprint(x) == _fp for x in self.sessions):
+                                all_sessions.append(_s)
+                except Exception:
+                    pass
+
+                feats_actual = [self._session_to_vector(s) for s in all_sessions]
                 X_act = np.array(feats_actual, dtype=float)
                 y_act = np.array(
                     [_PLAYER_TYPES_ORDER.index(self._rule_based_type(s))
-                     for s in self.sessions], dtype=int)
+                     for s in all_sessions], dtype=int)
                 X_all = np.vstack([X_syn, X_act])
                 y_all = np.concatenate([y_syn, y_act])
 
@@ -892,9 +930,21 @@ class PlayerMLEngine:
                 k      = min(5, len(X_all))
                 knn    = KNeighborsClassifier(n_neighbors=k, metric="euclidean")
                 knn.fit(X_sc, y_all)
+
+                # Validasi: hanya simpan jika akurasi model baru ≥ model lama
+                new_acc = float(knn.score(X_sc, y_all))
+                _save_new_knn = True
+                try:
+                    _old_knn_pkg = _load_pkl(PKL_KNN)
+                    if _old_knn_pkg is not None and "accuracy" in _old_knn_pkg:
+                        _save_new_knn = new_acc >= _old_knn_pkg["accuracy"] - 0.05
+                except Exception:
+                    pass
+
                 self._knn        = knn
                 self._knn_scaler = scaler
-                _save_pkl(PKL_KNN, {"model": knn, "scaler": scaler})
+                if _save_new_knn:
+                    _save_pkl(PKL_KNN, {"model": knn, "scaler": scaler, "accuracy": new_acc})
             except Exception:
                 pass
 
@@ -918,8 +968,18 @@ class PlayerMLEngine:
                     y_lr = np.array(y_lr, dtype=float)
                     lr   = LinearRegression()
                     lr.fit(X_lr, y_lr)
+                    # Validasi: simpan hanya jika R² baru ≥ R² lama
+                    new_r2 = float(lr.score(X_lr, y_lr))
+                    _save_new_lr = True
+                    try:
+                        _old_lr_pkg = _load_pkl(PKL_LR)
+                        if _old_lr_pkg is not None and "r2" in _old_lr_pkg:
+                            _save_new_lr = new_r2 >= _old_lr_pkg["r2"] - 0.05
+                    except Exception:
+                        pass
                     self._lr = lr
-                    _save_pkl(PKL_LR, {"model": lr})
+                    if _save_new_lr:
+                        _save_pkl(PKL_LR, {"model": lr, "r2": new_r2})
                 except Exception:
                     self._lr = None
 
@@ -4195,12 +4255,18 @@ class GameScreen(tk.Frame):
         # Hindari double-save jika callback terpanggil dua kali atau dashboard
         # memuat sesi yang sama lebih dari sekali.
         existing_fps = {_session_fingerprint(x) for x in sessions}
-        if fp not in existing_fps:
+        is_new = fp not in existing_fps
+        if is_new:
             sessions.append(s)
             self.ml.add_session(s)
 
         player_data["sessions"] = sessions
         save_data(data)
+
+        # Retrain SETELAH save_data agar _ml_all_sessions() melihat data terbaru.
+        # Menggunakan background thread agar UI tidak terganggu.
+        if is_new:
+            _ml_schedule_retrain(self.ml)
 
     # ── AI Solver ─────────────────────────────────────
     def _animate(self, hist, label):
@@ -5400,11 +5466,18 @@ def _ml_init(self):
     self._stats_model = None
     self._stats_scaler = None
     self._ml_dirty = True
+    # Warmup: load sesi historis semua pemain dari JSON agar model
+    # langsung punya konteks nyata sejak pertama kali digunakan.
+    # self.sessions tetap kosong (diisi dari luar berdasarkan pemain aktif),
+    # tapi _train_models/_train_ml_models memanfaatkan _ml_all_sessions().
     self._train_ml_models(force=True)
 
 
 def _ml_add_session(self, s):
     _orig_pmle_add_session(self, s)
+    # Tandai dirty agar predict berikutnya tahu model perlu diupdate.
+    # Retrain aktual dijadwalkan oleh _ml_schedule_retrain() setelah
+    # save_data() selesai, sehingga _ml_all_sessions() membaca data terbaru.
     self._ml_dirty = True
 
 
@@ -5474,7 +5547,17 @@ def _train_ml_models(self, force=False):
     rec_model.fit(X_rec_sc, y_rec)
     self._rec_model = rec_model
     self._rec_scaler = rec_scaler
-    _save_pkl(PKL_RFC, {"model": rec_model, "scaler": rec_scaler})
+    # Validasi: hanya timpa PKL jika akurasi model baru ≥ model lama (toleransi 3%)
+    new_rfc_acc = float(rec_model.score(X_rec_sc, y_rec))
+    _save_new_rfc = True
+    try:
+        _old_rfc = _load_pkl(PKL_RFC)
+        if _old_rfc is not None and "accuracy" in _old_rfc:
+            _save_new_rfc = new_rfc_acc >= _old_rfc["accuracy"] - 0.03
+    except Exception:
+        pass
+    if _save_new_rfc:
+        _save_pkl(PKL_RFC, {"model": rec_model, "scaler": rec_scaler, "accuracy": new_rfc_acc})
 
     # ── Stats Model (Multi-output regressor) ─────────────────────────
     X_stats, Y_stats = [], []
@@ -5517,7 +5600,17 @@ def _train_ml_models(self, force=False):
     stats_model.fit(X_stats_sc, Y_stats)
     self._stats_model = stats_model
     self._stats_scaler = stats_scaler
-    _save_pkl(PKL_MULTI, {"model": stats_model, "scaler": stats_scaler})
+    # Validasi: hanya timpa PKL jika R² model baru ≥ model lama (toleransi 3%)
+    new_multi_r2 = float(stats_model.score(X_stats_sc, Y_stats))
+    _save_new_multi = True
+    try:
+        _old_multi = _load_pkl(PKL_MULTI)
+        if _old_multi is not None and "r2" in _old_multi:
+            _save_new_multi = new_multi_r2 >= _old_multi["r2"] - 0.03
+    except Exception:
+        pass
+    if _save_new_multi:
+        _save_pkl(PKL_MULTI, {"model": stats_model, "scaler": stats_scaler, "r2": new_multi_r2})
 
 
 def _ml_predict_difficulty(self):

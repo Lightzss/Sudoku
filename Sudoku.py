@@ -578,7 +578,7 @@ def draw_gradient_bar(canvas, colors=None, height=8):
 # SUDOKU LOGIC
 # =====================================================
 def calculate_score(difficulty, total_time, empty_cells, errors,
-                    hints_used, completed, near_miss=0, guessing=0):
+                    hints_used, completed, near_miss=0, guessing=0, auto_used=0):
     """
     Skor yang adil: hint TIDAK boleh meningkatkan skor.
     ─────────────────────────────────────────────────────────────
@@ -590,6 +590,8 @@ def calculate_score(difficulty, total_time, empty_cells, errors,
         - sekaligus dikenai penalti hints_penalty eksplisit
     • Error: dikenai penalti proporsional.
     • "Asal tebak" (guessing): penalti ekstra dibanding "hampir benar".
+    • "Auto Fill" (draft mode): penalti sedang — kandidat diisi otomatis,
+        pemain tidak perlu menghitung constraint sendiri.
     ─────────────────────────────────────────────────────────────
     """
     if not completed:
@@ -618,7 +620,12 @@ def calculate_score(difficulty, total_time, empty_cells, errors,
     # Setiap hint = melewati 1 sel, dikenai 200 poin + proporsional
     hint_penalty = hints_used * 200
 
-    raw   = time_score - error_penalty - behavior_penalty - hint_penalty
+    # Penalti auto fill kandidat (draft mode Hard) — lebih ringan dari hint
+    # karena hanya mengisi kandidat, pemain masih perlu deduksi sendiri
+    # Setiap tekan Auto = 50 poin (1/4 dari penalti hint)
+    auto_penalty = auto_used * 50
+
+    raw   = time_score - error_penalty - behavior_penalty - hint_penalty - auto_penalty
     final = max(0, int(raw * diff_mult))
     return final
 
@@ -636,6 +643,7 @@ def _session_fingerprint(session):
         int(session.get("moves", 0) or 0),
         int(session.get("errors", 0) or 0),
         int(session.get("hints_used", 0) or 0),
+        int(session.get("auto_used", 0) or 0),
         bool(session.get("completed", False)),
         int(session.get("score", 0) or 0),
     )
@@ -1047,7 +1055,7 @@ class PlayerMLEngine:
                     "hint_rate": 0, "completion_rate": 0,
                     "avg_moves": 0, "sessions_count": 0,
                     "near_miss_rate": 0, "guessing_rate": 0,
-                    "avg_time_per_empty_cell": 0}
+                    "avg_time_per_empty_cell": 0, "auto_rate": 0}
         n = len(self.sessions)
         tpc  = sum(s.get("total_time", 0) / max(s.get("moves", 1), 1) for s in self.sessions) / n
         er   = sum(s.get("errors", 0) / max(s.get("moves", 1), 1) for s in self.sessions) / n
@@ -1058,6 +1066,8 @@ class PlayerMLEngine:
         total_err = sum(s.get("errors", 0) for s in self.sessions) or 1
         nmr  = sum(s.get("near_miss", 0) for s in self.sessions) / total_err
         gur  = sum(s.get("guessing", 0) for s in self.sessions) / total_err
+        # Auto fill rate (per move — seberapa sering Auto dipakai)
+        ar   = sum(s.get("auto_used", 0) for s in self.sessions) / max(am * n, 1)
         # Time per empty cell (direct performance metric)
         tpec = sum(s.get("time_per_cell", s.get("total_time",0)/max(s.get("moves",1),1))
                    for s in self.sessions) / n
@@ -1065,7 +1075,7 @@ class PlayerMLEngine:
                 "hint_rate": hr, "completion_rate": cr,
                 "avg_moves": am, "sessions_count": n,
                 "near_miss_rate": nmr, "guessing_rate": gur,
-                "avg_time_per_empty_cell": tpec}
+                "avg_time_per_empty_cell": tpec, "auto_rate": ar}
 
     def classify_player(self):
         """
@@ -2482,7 +2492,7 @@ class PerformanceDashboard(tk.Frame):
 
         chips = tk.Frame(head, bg=C_SURFACE)
         chips.pack(side="right")
-        for label, metric in [("Skor", "score"), ("Waktu", "time"), ("Errors", "errors"), ("Hints", "hints")]:
+        for label, metric in [("Skor", "score"), ("Waktu", "time"), ("Errors", "errors"), ("Hints", "hints"), ("Auto", "auto")]:
             self._metric_chip(chips, label, metric)
         self._update_metric_chip_states()
 
@@ -2582,7 +2592,8 @@ class PerformanceDashboard(tk.Frame):
             return s.get("score") or calculate_score(
                 s.get("difficulty", "Normal"), t, ec,
                 s.get("errors", 0), s.get("hints_used", 0),
-                s.get("completed", False), s.get("near_miss", 0), s.get("guessing", 0)
+                s.get("completed", False), s.get("near_miss", 0),
+                s.get("guessing", 0), s.get("auto_used", 0)
             )
 
         metric_map = {
@@ -2590,6 +2601,7 @@ class PerformanceDashboard(tk.Frame):
             "time":   ("Total Waktu (detik)", [float(s.get("total_time", 0)) for s in sessions], C_ACCENT),
             "errors": ("Errors",      [int(s.get("errors", 0)) for s in sessions],               C_ERROR),
             "hints":  ("Hints",       [int(s.get("hints_used", 0)) for s in sessions],          C_WARN),
+            "auto":   ("Auto Fill",   [int(s.get("auto_used", 0)) for s in sessions],           C_PURPLE),
         }
         title, y, color = metric_map.get(metric, metric_map["score"])
 
@@ -2624,6 +2636,8 @@ class PerformanceDashboard(tk.Frame):
             ax.set_ylabel("detik", color=C_TEXT_DIM, fontsize=8)
         elif metric == "score":
             ax.set_ylabel("skor", color=C_TEXT_DIM, fontsize=8)
+        elif metric == "auto":
+            ax.set_ylabel("kali", color=C_TEXT_DIM, fontsize=8)
         else:
             ax.set_ylabel(metric.capitalize(), color=C_TEXT_DIM, fontsize=8)
 
@@ -2728,6 +2742,7 @@ class PerformanceDashboard(tk.Frame):
             ("🎲", "Guessing",           str(gu),                           C_ERROR),
             ("🏆", "Skor",               str(score),                        C_GOLD),
             ("🎮", "Grid",               f"{grid_sz*grid_sz}×{grid_sz*grid_sz}", C_PURPLE),
+            ("⚡", "Auto Fill",          str(s.get("auto_used", 0)),        C_PURPLE),
         ]
 
         grid = tk.Frame(parent, bg=C_BG)
@@ -2764,6 +2779,7 @@ class PerformanceDashboard(tk.Frame):
             ("🎲", "Guessing", s.get("guessing", 0), C_ERROR, "Menebak angka berulang di sel yang sama."),
             ("📐", "Latency", f"{s.get('time_per_cell', s.get('total_time', 0)/max(s.get('moves',1),1)):.1f}s", C_ACCENT, "Semakin kecil, semakin efisien."),
             ("💔", "Surrender", f"{s.get('hints_used', 0)}/{s.get('max_hearts', feat.get('sessions_count', 1) or 1)}", C_PURPLE, "Frekuensi memakai hint dibanding kapasitas hidup."),
+            ("⚡", "Auto Fill", str(s.get("auto_used", 0)), "#BC8CFF", "Penggunaan Auto isi kandidat (-50 poin/kali, Hard mode)."),
         ]
 
         for idx, (ico, ttl, val, col, desc) in enumerate(b_items):
@@ -2781,7 +2797,7 @@ class PerformanceDashboard(tk.Frame):
                      bg=C_SURFACE2, fg=col).pack(side="right")
             tk.Label(box, text=desc, font=("Segoe UI", 8),
                      bg=C_SURFACE2, fg=C_TEXT_DIM, wraplength=250, justify="left").pack(anchor="w", pady=(6,0))
-        for r in range(2):
+        for r in range(3):
             inner.rowconfigure(r, weight=1)
         for c in range(2):
             inner.columnconfigure(c, weight=1)
@@ -2804,7 +2820,7 @@ class PerformanceDashboard(tk.Frame):
             ("Kecepatan",    max(0, min(100, 100 - feat["avg_time_per_cell"]*8)),  C_GOLD),
             ("Akurasi",      max(0, min(100, 100 - feat["error_rate"]*250)),        C_ACCENT2),
             ("Konsistensi",  feat["completion_rate"]*100,                           C_ACCENT),
-            ("Kemandirian",  max(0, min(100, (1-feat["hint_rate"])*100)),           C_PURPLE),
+            ("Kemandirian",  max(0, min(100, (1 - feat["hint_rate"] - feat.get("auto_rate", 0) * 0.4) * 100)), C_PURPLE),
         ]:
             self._bar(bar_box, sn, sv, sc_col)
 
@@ -3000,6 +3016,7 @@ class GameScreen(tk.Frame):
         self.error_count      = 0
         self.move_count       = 0
         self.hints_used       = 0
+        self.auto_used_count  = 0   # berapa kali tombol ⚡ Auto ditekan
         self.last_action      = time.time()
         self.idle_after       = None
         self.hint_shown       = False
@@ -3121,6 +3138,7 @@ class GameScreen(tk.Frame):
         self.lbl_moves  = self._stat_row(sf, "Moves",  "0")
         self.lbl_errors = self._stat_row(sf, "Errors", "0")
         self.lbl_hints  = self._stat_row(sf, "Hints",  "0")
+        self.lbl_auto   = self._stat_row(sf, "Auto ⚡", "0", col="#BC8CFF")
 
         # ── Behaviour analysis rows ────────────────────────────────
         tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(4,2))
@@ -3439,6 +3457,7 @@ class GameScreen(tk.Frame):
         """
         Otomatis isi kandidat untuk semua sel kosong (constraint propagation).
         Standar di aplikasi Sudoku modern (tombol "pencil mark auto").
+        Setiap penggunaan dicatat dan dikenai penalti skor (-50 poin).
         """
         if self.difficulty != "Hard": return
         added = 0
@@ -3453,9 +3472,12 @@ class GameScreen(tk.Frame):
                 if candidates:
                     self.draft_board[(r, c)] = candidates
                     added += len(candidates)
+        # Catat penggunaan Auto untuk statistik dan penilaian
+        self.auto_used_count += 1
         self._draw_board()
+        penalty_info = f" | -50 poin (total: {self.auto_used_count}×)"
         self.status_var.set(
-            f"⚡ {added} kandidat diisi di {len(self.draft_board)} sel")
+            f"⚡ {added} kandidat diisi di {len(self.draft_board)} sel{penalty_info}")
 
     def _eliminate_candidates(self, confirmed_r, confirmed_c, confirmed_num):
         """
@@ -3613,6 +3635,7 @@ class GameScreen(tk.Frame):
         self.error_count   = 0
         self.move_count    = 0
         self.hints_used    = 0
+        self.auto_used_count = 0
         self.last_action   = time.time()
         self.hint_shown    = False
 
@@ -4180,6 +4203,8 @@ class GameScreen(tk.Frame):
         self.lbl_errors.config(text=str(self.error_count),
                                fg=C_ERROR if self.error_count > 0 else C_TEXT)
         self.lbl_hints.config(text=str(self.hints_used))
+        self.lbl_auto.config(text=str(self.auto_used_count),
+                              fg=C_PURPLE if self.auto_used_count > 0 else C_TEXT)
         self.lbl_nearmiss.config(text=str(self.near_miss_count),
                                   fg="#F0883E" if self.near_miss_count else C_TEXT)
         self.lbl_guessing.config(text=str(self.guessing_count),
@@ -4228,6 +4253,7 @@ class GameScreen(tk.Frame):
             "moves":          self.move_count,
             "errors":         self.error_count,
             "hints_used":     self.hints_used,
+            "auto_used":      self.auto_used_count,
             "completed":      completed,
             "timestamp":      time.time(),
             # ── New fields ─────────────────────────────────────────
@@ -4240,7 +4266,7 @@ class GameScreen(tk.Frame):
             "score":          calculate_score(
                 self.difficulty, self.elapsed, self.empty_cells,
                 self.error_count, self.hints_used, completed,
-                self.near_miss_count, self.guessing_count),
+                self.near_miss_count, self.guessing_count, self.auto_used_count),
         }
 
     def _save_session(self, s):
@@ -4874,7 +4900,7 @@ class PlayerSelectScreen(tk.Frame):
             ("Kecepatan",     max(0, min(100, 100 - feats["avg_time_per_cell"]*8)), C_GOLD),
             ("Akurasi",       max(0, min(100, 100 - feats["error_rate"]*250)),      "#7EE787"),
             ("Konsistensi",   feats["completion_rate"]*100,                         "#58A6FF"),
-            ("Kemandirian",   max(0, min(100, (1-feats["hint_rate"])*100)),         "#BC8CFF"),
+            ("Kemandirian",   max(0, min(100, (1 - feats["hint_rate"] - feats.get("auto_rate", 0) * 0.4) * 100)), "#BC8CFF"),
         ]
         for lbl, pct, col in bars:
             self._skill_bar(sk_body, lbl, pct, col, C_SURFACE)
@@ -5691,13 +5717,24 @@ def _ml_predict_profile(self, session=None):
 def _ml_recommend_next_challenge(self):
     """
     Return a next-step recommendation that avoids stagnating on the same
-    easy 2x2 route after a strong finish.
+    easy 2x2 route after a strong finish, and avoids promoting struggling
+    players to harder difficulty before they are ready.
 
     Output dict:
       - difficulty: Easy | Normal | Hard
       - grid_size: 2 | 3
       - confidence: 0.0..100.0
       - reason: short human-readable explanation
+
+    Logic priority (highest wins):
+      1. No sessions → Easy 2×2
+      2. Grid 2×2 → promote if strong, else stay
+      3. Grid 3×3:
+         a. High error rate (>30%) → cap at Normal regardless of completion
+         b. Struggling / too many hints → cap at Normal
+         c. Strong session → promote to Hard
+         d. Not completed + struggling → demote to Easy 2×2
+         e. Default → Normal (NEVER blindly use RFC prediction here)
     """
     latest = self.sessions[-1] if self.sessions else None
     if latest is None:
@@ -5717,13 +5754,21 @@ def _ml_recommend_next_challenge(self):
     tpc = float(latest.get("time_per_cell", latest.get("total_time", 0.0) / max(latest.get("moves", 1), 1)))
     errors = int(latest.get("errors", 0))
     hints = int(latest.get("hints_used", 0))
+    max_hearts = int(latest.get("max_hearts", grid * grid * grid))
     moves = max(int(latest.get("moves", 1)), 1)
     error_rate = errors / moves
+
+    # Get player classification for cap logic
+    try:
+        pt_name, _, _ = _orig_pmle_classify_conf(self)
+    except Exception:
+        pt_name = "Inconsistent"
 
     speed_index = float(profile.get("speed_index", 0.0))
     accuracy_index = float(profile.get("accuracy_index", 0.0))
     independence_index = float(profile.get("independence_index", 0.0))
 
+    # ── GRID 2×2 block ────────────────────────────────────────────────────
     # Promotion rule: a solid finish on 2x2 should move the user to 3x3.
     if grid <= 2:
         if completed and (
@@ -5755,20 +5800,61 @@ def _ml_recommend_next_challenge(self):
             "reason": "perlu stabilisasi di 2x2",
         }
 
-    # For 3x3, stay on 3x3 unless the session was clearly unstable.
+    # ── GRID 3×3 block ────────────────────────────────────────────────────
+
+    # GUARD 1: High error rate → stabilize at Normal, never jump to Hard.
+    # This catches Struggling players who completed but made many mistakes.
+    # error_rate > 0.30 (30% of moves were wrong) = needs more practice first.
+    hint_heavy = hints >= max(3, max_hearts // 2)
+    if error_rate > 0.30 or hint_heavy or pt_name == "Struggling":
+        if completed and score >= 100:
+            return {
+                "difficulty": "Normal",
+                "grid_size": 3,
+                "confidence": max(pred_conf, 60.0),
+                "reason": "selesai, tapi error rate masih tinggi — kuasai Normal dulu",
+            }
+        elif completed:
+            return {
+                "difficulty": "Easy",
+                "grid_size": 3,
+                "confidence": max(pred_conf, 55.0),
+                "reason": "banyak kesalahan, coba Easy 3×3 untuk membangun ritme",
+            }
+        else:
+            return {
+                "difficulty": "Easy",
+                "grid_size": 2,
+                "confidence": max(pred_conf, 55.0),
+                "reason": "belum selesai dan banyak error — turun dulu ke 2×2",
+            }
+
+    # GUARD 2: Promote to Hard only when metrics are clearly strong.
+    # All four gates use strict thresholds to prevent premature promotion.
     if completed and (
         score >= 650
-        or speed_index >= 60.0
-        or accuracy_index >= 60.0
-        or independence_index >= 60.0
+        and error_rate <= 0.15
+        and hints <= max(1, moves // 8)
     ):
         return {
             "difficulty": "Hard",
             "grid_size": 3,
             "confidence": max(pred_conf, 70.0),
+            "reason": "performa sangat baik, siap tantangan lebih berat",
+        }
+
+    # Allow ML to suggest Hard only when player type AND indexes agree
+    if completed and pt_name in ("Speedrunner", "Careful") and (
+        speed_index >= 60.0 or accuracy_index >= 60.0 or independence_index >= 60.0
+    ):
+        return {
+            "difficulty": "Hard",
+            "grid_size": 3,
+            "confidence": max(pred_conf, 65.0),
             "reason": "siap tantangan yang lebih berat",
         }
 
+    # GUARD 3: Not completed + clearly struggling → demote
     if (not completed) and (error_rate > 0.35 or hints >= max(2, moves // 4)):
         return {
             "difficulty": "Easy",
@@ -5777,12 +5863,15 @@ def _ml_recommend_next_challenge(self):
             "reason": "turun sebentar untuk pemulihan",
         }
 
-    # Default: keep 3x3 with a normal difficulty suggestion.
+    # DEFAULT: Stay at Normal on 3×3.
+    # NOTE: pred_diff intentionally NOT used here — the RFC model is
+    # trained mostly on synthetic data and frequently over-predicts Hard
+    # for players with few sessions, causing incorrect promotion.
     return {
-        "difficulty": "Normal" if pred_diff is None else pred_diff,
+        "difficulty": "Normal",
         "grid_size": 3,
         "confidence": max(pred_conf, 50.0),
-        "reason": "pertahankan ritme saat ini",
+        "reason": "pertahankan ritme saat ini di level Normal",
     }
 
 

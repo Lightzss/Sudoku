@@ -1,0 +1,24 @@
+# =====================================================================
+# requirements.txt — Sudoku AI (ML Intelligence System)
+# Python >= 3.9 recommended
+# Install: pip install -r requirements.txt
+# =====================================================================
+
+# ── Core ML & Numerik ────────────────────────────────────────────────
+numpy>=1.24.0,<2.0.0
+scikit-learn>=1.3.0,<1.6.0
+
+# ── Data & Visualisasi (untuk Sudoku.py + Notebook) ─────────────────
+pandas>=2.0.0,<3.0.0
+matplotlib>=3.7.0,<4.0.0
+seaborn>=0.13.0,<0.14.0
+
+# ── Audio (opsional — musik latar di game) ───────────────────────────
+# Hapus baris ini jika tidak butuh musik
+pygame>=2.5.0,<3.0.0
+
+# ── Catatan: library di bawah adalah stdlib (TIDAK perlu diinstall) ──
+# tkinter   — sudah termasuk dalam instalasi Python standar
+# pickle    — stdlib
+# threading — stdlib
+# json, os, copy, time, random, re, urllib — stdlib

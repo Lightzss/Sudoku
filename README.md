@@ -1,243 +1,170 @@
-# 🧩 Sudoku AI — ML Intelligence System
+# ⬛ Sudoku AI — Machine Learning Intelligence System
 
-> Sudoku klasik yang ditingkatkan dengan kecerdasan buatan: profil pemain adaptif, rekomendasi kesulitan real-time, solver otomatis, dan sistem skor kompetitif — semuanya dalam satu aplikasi desktop Python.
-
----
-
-## 📸 Tampilan
-
-| Login & Tema | Papan Permainan | Profil Pemain |
-|:---:|:---:|:---:|
-| Dark / Light mode | Draft Mode (Hard) | Statistik & ML |
+Sudoku berbasis GUI Python dengan sistem **Machine Learning** yang terintegrasi penuh. Program ini mampu mengklasifikasi tipe pemain, merekomendasikan tingkat kesulitan secara adaptif, mendeteksi sesi anomali, dan memprediksi performa pemain ke depannya — semua secara real-time.
 
 ---
 
-## ✨ Fitur Utama
-
-### 🎮 Gameplay
-- **Dua ukuran grid** — 4×4 (santai) dan 9×9 (standar)
-- **Tiga tingkat kesulitan** — Easy, Normal, Hard, masing-masing dengan persentase sel kosong yang berbeda
-- **Mode Draft (Hard only)** — tandai angka kandidat di sudut sel layaknya Sudoku profesional, dengan tampilan mini 3×3 per sel
-- **Sistem Hati** — jumlah hint terbatas sesuai ukuran grid (4 hati untuk 4×4, 9 hati untuk 9×9)
-- **Deteksi near-miss & asal tebak** — game mencatat apakah kesalahan berasal dari hampir benar (1 error per sel) atau asal tebak (2+ error per sel)
-- **Timer aktif** — dihitung sejak angka pertama dimasukkan
-
-### 🤖 AI & Machine Learning
-Sudoku AI menggunakan **5 model ML** yang dilatih ulang di background setiap kali sesi selesai:
-
-| Model | File | Fungsi |
-|---|---|---|
-| `KNeighborsClassifier` | `KNN.pkl` | Klasifikasi tipe pemain |
-| `LinearRegression` | `LR.pkl` | Prediksi skor sesi berikutnya |
-| `IsolationForest` | `ISO.pkl` | Deteksi anomali performa |
-| `RandomForestClassifier` | `RFC.pkl` | Rekomendasi difficulty |
-| `MultiOutputRegressor` | `Multi.pkl` | Proyeksi multi-metrik |
-
-**Tipe pemain yang dikenali:**
-- ⚡ **Speedrunner** — cepat, presisi tinggi, jarang pakai hint
-- 🛡 **Careful** — lambat tapi akurat, konsisten
-- 📚 **Learner** — error rate sedang, sedang berkembang
-- 💪 **Struggling** — banyak error atau hint, butuh dukungan
-- 🎲 **Inconsistent** — performa tidak menentu, sering menebak
-
-### 🔢 Solver Otomatis
-Algoritma **Backtracking MRV (Minimum Remaining Values)** + Forward Checking:
-- Memilih sel dengan kemungkinan kandidat paling sedikit terlebih dahulu
-- Eliminasi kandidat otomatis (forward checking)
-- Tombol `⚡ Auto` mengisi kandidat otomatis di mode Draft
-
-### 📊 Sistem Skor
-Skor dihitung berdasarkan formula multi-faktor:
+## 📁 Struktur Proyek
 
 ```
-Skor = Base × Difficulty Multiplier × Speed Bonus − Error Penalty − Hint Penalty
+sudoku-ai/
+├── Sudoku.py                  # Aplikasi utama (GUI + ML engine)
+├── Sudoku_ML_Models.ipynb     # Notebook training & evaluasi model
+├── requirements.txt           # Dependensi Python
+├── sudoku_data.json           # Data sesi pemain (dibuat otomatis)
+├── sudoku_music.mp3           # File musik (diunduh otomatis dari Google Drive)
+├── KNN.pkl                    # Model tipe pemain (dibuat otomatis)
+├── LR.pkl                     # Model prediksi skor (dibuat otomatis)
+├── ISO.pkl                    # Model deteksi anomali (dibuat otomatis)
+├── RFC.pkl                    # Model rekomendasi kesulitan (dibuat otomatis)
+└── Multi.pkl                  # Model profil statistik (dibuat otomatis)
 ```
 
-- **Base score** dari kecepatan per sel
-- **Multiplier** — Easy ×1.0, Normal ×1.5, Hard ×2.2
-- **Penalti error** — setiap kesalahan memotong skor
-- **Bonus near-miss** — mendekati benar tapi salah tetap diapresiasi
-- **Penalti tebak** — asal tebak (2+ error per sel) dihukum lebih berat
-
-### 🏆 Leaderboard
-- Menampilkan **satu skor terbaik per pemain** (bukan semua sesi)
-- Filter berdasarkan ukuran grid (4×4 / 9×9) dan kesulitan (All / Easy / Normal / Hard)
-- Tampil dengan ranking, waktu, moves, error, dan skor
-
-### 👥 Manajemen Pemain
-- Daftar semua pemain terdaftar dengan profil lengkap
-- Panel dua kolom: list pemain di kiri, detail statistik di kanan
-- Statistik mencakup: win rate, error rate, hint rate, avg time/sel, total playtime, best score
-- Badge tipe pemain dengan warna dan ikon unik
+> File `.pkl` dan `.json` dibuat **otomatis** saat pertama kali program dijalankan. Tidak perlu dibuat manual.
 
 ---
 
-## 🖥 Tampilan Antarmuka
+## 🚀 Cara Menjalankan
 
-### Tema
-Aplikasi mendukung dua tema yang dapat diubah kapan saja tanpa kehilangan progress:
-
-| Tema | Latar | Aksen |
-|---|---|---|
-| 🌑 **Dark** (default) | `#0D1117` | Biru `#58A6FF` |
-| ☀️ **Light** | `#F0F2F5` | Biru `#1A6FBF` |
-
-Tombol toggle tema berada di pojok kanan atas layar.
-
-### Layar & Navigasi
-```
-Login Screen
-  ├── Start Playing (username baru)
-  ├── Daftar Pemain (pilih akun lama)
-  └── Leaderboard
-
-Daftar Pemain
-  └── Pilih Pemain → Grid Size Screen
-                        └── Difficulty Screen
-                              └── Game Screen
-                                    └── Performance Dashboard
-```
-
-### Panel Sidebar (saat bermain)
-- Ganti difficulty tanpa keluar game
-- Kontrol: New Game, Hint, Leaderboard, Ganti Pemain, Logout
-- Mode Draft (hanya Hard): toggle, Auto Fill, Hapus
-- AI Solver: Backtracking MRV
-- Statistik sesi: Moves, Errors, Hints, Auto, Hampir Benar, Asal Tebak
-- Indikator Hati (hint tersisa)
-- Tombol HINT besar
-
----
-
-## 🎵 Musik Latar
-Aplikasi mengunduh file musik `.mp3` otomatis dari Google Drive saat pertama dijalankan (jika koneksi tersedia). Musik dapat di-toggle dengan shortcut **`[M]`**. Memerlukan library `pygame`.
-
----
-
-## 🛠 Instalasi & Cara Menjalankan
-
-### Persyaratan Sistem
-- Python **3.8+**
-- OS: Windows / macOS / Linux (dengan Tkinter)
-
-### Dependensi
+### 1. Clone repositori
 
 ```bash
-pip install numpy scikit-learn pygame
+git clone https://github.com/username/sudoku-ai.git
+cd sudoku-ai
 ```
 
-> Tkinter sudah termasuk dalam instalasi Python standar. Jika tidak ada, install via:
-> `sudo apt install python3-tk` (Linux/Debian)
+### 2. (Opsional) Buat virtual environment
 
-### Menjalankan
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+```
+
+### 3. Install dependensi
+
+```bash
+pip install -r requirements.txt
+```
+
+> **Catatan untuk tkinter:** Jika muncul error `ModuleNotFoundError: No module named 'tkinter'`, jalankan:
+> - **Ubuntu/Debian:** `sudo apt-get install python3-tk`
+> - **macOS (Homebrew):** `brew install python-tk`
+> - **Windows:** tkinter sudah termasuk dalam installer Python resmi.
+
+### 4. Jalankan game
 
 ```bash
 python Sudoku.py
 ```
 
-### File yang Dihasilkan
-Aplikasi membuat beberapa file otomatis di direktori yang sama:
+### 5. (Opsional) Jalankan notebook training model
 
-| File | Keterangan |
-|---|---|
-| `sudoku_data.json` | Data pemain, sesi, dan statistik |
-| `KNN.pkl` | Model klasifikasi pemain |
-| `LR.pkl` | Model prediksi skor |
-| `ISO.pkl` | Model deteksi anomali |
-| `RFC.pkl` | Model rekomendasi difficulty |
-| `Multi.pkl` | Model proyeksi multi-metrik |
-| `sudoku_music.mp3` | File musik (diunduh otomatis) |
+```bash
+jupyter notebook Sudoku_ML_Models.ipynb
+```
+
+---
+
+## 🎮 Fitur Utama
+
+| Fitur | Deskripsi |
+|-------|-----------|
+| **Grid 4×4 & 9×9** | Dua ukuran papan dengan tingkat kesulitan Easy / Normal / Hard |
+| **AI Solver** | Backtracking MRV (Minimum Remaining Values) dengan animasi langkah |
+| **Draft / Pencil Mode** | Mode coret-coretan kandidat angka (Hard mode) dengan auto-fill constraint propagation |
+| **Tema Dark & Light** | Toggle tema instan tanpa restart |
+| **Musik Latar** | Diunduh otomatis dari Google Drive, toggle dengan tombol `M` |
+| **Leaderboard** | Papan skor semua pemain, dapat difilter per grid dan kesulitan |
+| **Performance Dashboard** | Grafik interaktif tren performa tiap sesi |
+
+---
+
+## 🧠 Sistem Machine Learning
+
+Lima model scikit-learn yang bekerja secara otomatis di balik layar:
+
+| File PKL | Model | Fungsi |
+|----------|-------|--------|
+| `KNN.pkl` | `KNeighborsClassifier` + `StandardScaler` | Klasifikasi tipe pemain (5 kelas) |
+| `LR.pkl` | `LinearRegression` | Prediksi skor sesi berikutnya |
+| `ISO.pkl` | `IsolationForest` + `StandardScaler` | Deteksi sesi anomali |
+| `RFC.pkl` | `RandomForestClassifier` + `StandardScaler` | Rekomendasi tingkat kesulitan |
+| `Multi.pkl` | `MultiOutputRegressor(RFR)` + `StandardScaler` | Prediksi 11 metrik profil pemain |
+
+### Tipe Pemain yang Dikenali
+
+| Tipe | Ciri |
+|------|------|
+| ⚡ Speedrunner | Cepat & akurat |
+| 🧩 Careful | Hati-hati & teliti |
+| 📚 Learner | Sedang berkembang |
+| 💪 Struggling | Butuh bantuan |
+| 🎲 Inconsistent | Tidak konsisten |
+
+### Fitur Input Model
+
+Setiap sesi pemain direpresentasikan oleh vektor fitur berikut:
+
+| Fitur | Keterangan |
+|-------|-----------|
+| `tpc` | Waktu rata-rata per gerakan (detik) |
+| `er` | Error rate (error / total gerakan) |
+| `hr` | Hint rate (hint / total gerakan) |
+| `cr` | Completion rate (0 atau 1 per sesi) |
+| `nmr` | Near-miss rate |
+| `gur` | Guessing rate |
+| `moves` | Rata-rata jumlah gerakan (RFC & Multi) |
+| `score` | Skor sesi (RFC & Multi) |
+
+---
+
+## 📊 Notebook Training (`Sudoku_ML_Models.ipynb`)
+
+Notebook ini mencakup:
+
+1. **Generasi Data Sintetis** — 1.200 sampel per kelas untuk KNN, 2.000 sampel untuk RFC & Multi dengan noise Gaussian dan overlap antar kelas
+2. **EDA** — Distribusi fitur per tipe pemain dan heatmap korelasi
+3. **Training & Tuning** — GridSearchCV, StratifiedKFold-5, learning curve
+4. **Evaluasi** — Classification report, confusion matrix, MSE, MAE, R²
+5. **Export** — Semua model disimpan ke `.pkl` untuk dipakai langsung oleh `Sudoku.py`
 
 ---
 
 ## ⌨️ Shortcut Keyboard
 
-| Tombol | Fungsi |
-|---|---|
-| `1` – `9` | Input angka ke sel aktif |
-| `Backspace` / `Delete` | Hapus angka di sel aktif |
-| `Arrow keys` | Pindah sel |
-| `D` | Toggle Mode Draft |
-| `M` | Toggle musik |
-| `Esc` | Toggle Fullscreen |
-| `Enter` / `Space` | Konfirmasi kandidat tunggal (draft mode) |
+| Tombol | Aksi |
+|--------|------|
+| `1–9` | Input angka ke sel yang dipilih |
+| `Backspace / Delete` | Hapus angka di sel |
+| `Arrow keys` | Navigasi sel |
+| `D` | Toggle draft/pencil mode (Hard mode) |
+| `Enter / Space` | Konfirmasi naked single di draft mode |
+| `M` | Toggle musik latar |
+| `Esc` | Toggle fullscreen |
 
 ---
 
-## 🏗 Struktur Kode
+## 🔧 Kompatibilitas
 
-```
-Sudoku.py
-├── Konfigurasi & Tema          (baris ~60–400)
-│   ├── Dark / Light theme
-│   └── Difficulty themes (per mode)
-├── Logika Puzzle               (~540–830)
-│   ├── generate_full_board()
-│   ├── generate_puzzle()
-│   └── solve_backtracking_mrv()
-├── Sistem Skor                 (~580–640)
-│   └── calculate_score()
-├── ML Engine                   (~832–1240)
-│   └── class PlayerMLEngine
-│       ├── KNN, LR, IsolationForest
-│       ├── RFC, MultiOutputRegressor
-│       ├── classify_player()
-│       ├── recommend_difficulty()
-│       └── predict_next_score()
-├── Layar UI                    (~1238–5082)
-│   ├── AnimatedBG              — background bintang animasi
-│   ├── LoginScreen             — halaman awal
-│   ├── GridSizeScreen          — pilih 4×4 / 9×9
-│   ├── DifficultyScreen        — pilih kesulitan + rekomendasi AI
-│   ├── GameScreen              — papan utama + sidebar
-│   ├── PerformanceDashboard    — hasil & analisis pasca game
-│   ├── LeaderboardWindow       — papan skor global
-│   └── PlayerSelectScreen      — manajemen & profil pemain
-└── App Controller              (~5083–5480)
-    └── class SudokuApp
-        ├── Navigasi antar layar
-        ├── Sistem rebuild tema
-        └── Preservasi state game saat ganti tema
-```
+| Komponen | Versi |
+|----------|-------|
+| Python | ≥ 3.9 |
+| scikit-learn | ≥ 1.3, < 1.6 |
+| numpy | ≥ 1.24, < 2.0 |
+| pandas | ≥ 2.0 (notebook) |
+| matplotlib | ≥ 3.7 (dashboard & notebook) |
+| seaborn | ≥ 0.13 (notebook) |
+| pygame | ≥ 2.5 (opsional, musik) |
+| tkinter | stdlib (bawaan Python) |
 
 ---
 
-## 🔧 Konfigurasi Kustom
+## 📝 Catatan
 
-Edit bagian `KONFIGURASI` di awal file untuk menyesuaikan:
-
-```python
-# Ganti link musik Google Drive
-GDRIVE_LINK_MUSIC = "https://drive.google.com/file/d/..."
-
-# Nama file model ML
-PKL_KNN   = "KNN.pkl"
-PKL_LR    = "LR.pkl"
-PKL_ISO   = "ISO.pkl"
-PKL_RFC   = "RFC.pkl"
-PKL_MULTI = "Multi.pkl"
-```
-
----
-
-## 🐛 Catatan Teknis
-
-- Model ML otomatis di-retrain di **background thread** setelah setiap sesi selesai menggunakan `threading.Lock` untuk mencegah retrain ganda
-- Ganti tema **tidak mereset papan atau timer** — state game disimpan penuh dan dipulihkan ke instance baru
-- Saat ganti tema, timer lama dihentikan terlebih dahulu sebelum widget dihancurkan untuk mencegah duplikasi loop `_tick`
-- Pilihan pemain di `PlayerSelectScreen` dipertahankan saat tema diganti via callback `on_highlight`
-- Leaderboard hanya menampilkan **satu entri terbaik per pemain** agar ranking tidak didominasi oleh satu orang
-
----
-
-## 📄 Lisensi
-
-Proyek ini dibuat untuk keperluan edukasi dan pengembangan pribadi.
-
----
-
-<div align="center">
-
-Dibuat dengan ❤️ menggunakan Python · Tkinter · scikit-learn · pygame
-
-</div>
+- File `.pkl` divalidasi sebelum disimpan ulang — model lama tidak akan ditimpa kecuali model baru memiliki akurasi yang lebih baik.
+- Retrain model berjalan di **background thread** agar tidak memblokir UI.
+- Data sesi disimpan di `sudoku_data.json` dalam direktori yang sama dengan `Sudoku.py`.
+- Musik diunduh satu kali dan disimpan lokal; tidak ada unduhan ulang jika file sudah ada.

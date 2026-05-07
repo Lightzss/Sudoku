@@ -11,6 +11,7 @@ import os
 import pickle
 import threading
 import urllib.request
+import numpy as np
 
 # ── ML continuous-improvement helpers ────────────────────────────────────────
 _ml_retrain_lock = threading.Lock()   # prevent concurrent retrains
@@ -53,7 +54,6 @@ try:
     from sklearn.ensemble import IsolationForest, RandomForestClassifier, RandomForestRegressor
     from sklearn.multioutput import MultiOutputRegressor
     from sklearn.preprocessing import StandardScaler
-    import numpy as np
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -1312,7 +1312,7 @@ class LoginScreen(tk.Frame):
         # Center card — slightly taller for the extra action button
         card = tk.Frame(self, bg=C_SURFACE,
                         highlightbackground=C_BORDER, highlightthickness=1)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=500, height=490)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=500, height=530)
 
         # Top gradient bar
         gbar = tk.Canvas(card, height=8, bg=C_SURFACE, highlightthickness=0)
@@ -1359,7 +1359,7 @@ class LoginScreen(tk.Frame):
                   relief="flat", cursor="hand2", pady=10,
                   command=self._login).pack(padx=40, fill="x", pady=(8, 0))
 
-        # LOGIN button (opens player list + statistics)
+        # DAFTAR PEMAIN button
         tk.Button(card, text="DAFTAR PEMAIN  →",
                   font=("Segoe UI", 11, "bold"),
                   bg=C_SURFACE2, fg=C_TEXT,
@@ -1368,31 +1368,20 @@ class LoginScreen(tk.Frame):
                   highlightbackground=C_ACCENT, highlightthickness=1,
                   command=self._open_player_login).pack(padx=40, fill="x", pady=(10, 0))
 
-        tk.Label(card,
-                 text="Gunakan DAFTAR PEMAIN untuk melihat seluruh player dan statistiknya.",
-                 font=("Segoe UI", 9), bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(8, 0))
-
-        # Divider
-        div = tk.Frame(card, bg=C_SURFACE)
-        div.pack(padx=40, fill="x", pady=(14, 6))
-        tk.Frame(div, height=1, bg=C_BORDER).pack(side="left", fill="x", expand=True)
-        tk.Label(div, text="  atau  ", font=FONT_SMALL, bg=C_SURFACE, fg=C_TEXT_DIM).pack(side="left")
-        tk.Frame(div, height=1, bg=C_BORDER).pack(side="right", fill="x", expand=True)
-
-        # Leaderboard row
-        bot = tk.Frame(card, bg=C_SURFACE)
-        bot.pack(padx=40, fill="x")
-        tk.Button(bot, text="🏆  Lihat Leaderboard",
-                  font=FONT_BTN, bg=C_SURFACE, fg=C_GOLD,
-                  activebackground=C_SURFACE2, activeforeground=C_GOLD,
-                  relief="flat", cursor="hand2", pady=6,
+        # LEADERBOARD button
+        tk.Button(card, text="🏆  LEADERBOARD",
+                  font=("Segoe UI", 11, "bold"),
+                  bg=C_SURFACE2, fg=C_GOLD,
+                  activebackground=C_BORDER, activeforeground=C_GOLD,
+                  relief="flat", cursor="hand2", pady=10,
+                  highlightbackground=C_GOLD, highlightthickness=1,
                   command=lambda: LeaderboardWindow(self.master, load_data())
-                  ).pack(fill="x")
+                  ).pack(padx=40, fill="x", pady=(10, 0))
 
         n_p = len(self.data.get("players", {}))
         tk.Label(card,
                  text=f"👤 {n_p} pemain terdaftar",
-                 font=FONT_SMALL, bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(6, 20))
+                 font=FONT_SMALL, bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(12, 20))
 
 
         self.entry.focus_set()
@@ -2173,9 +2162,9 @@ class LeaderboardWindow(tk.Toplevel):
         for w in self._table_frame.winfo_children():
             w.destroy()
 
-        # Build entries
+        # Build entries — only best score per player
         box = 2 if self._active_grid == "4x4" else 3
-        entries = []
+        best_per_player = {}  # username -> best entry dict
         for uname, pdata in self.data.get("players", {}).items():
             for s in pdata.get("sessions", []):
                 if not s.get("completed"): continue
@@ -2188,12 +2177,14 @@ class LeaderboardWindow(tk.Toplevel):
                     s.get("empty_cells", max(s.get("moves",1),1)),
                     s.get("errors",0), s.get("hints_used",0), True,
                     s.get("near_miss",0), s.get("guessing",0))
-                entries.append({
+                entry = {
                     "username": uname, "difficulty": diff,
                     "time": t, "moves": s.get("moves", 0),
                     "errors": s.get("errors", 0), "score": score
-                })
-        entries.sort(key=lambda x: -x["score"])
+                }
+                if uname not in best_per_player or score > best_per_player[uname]["score"]:
+                    best_per_player[uname] = entry
+        entries = sorted(best_per_player.values(), key=lambda x: -x["score"])
 
         # Header row
         hrow = tk.Frame(self._table_frame, bg=C_SURFACE2)
@@ -2981,7 +2972,8 @@ class GameScreen(tk.Frame):
     CELL_PX_9 = 58   # untuk 9x9
     CELL_PX_4 = 90   # untuk 4x4
 
-    def __init__(self, master, username, grid_size, difficulty, on_finish):
+    def __init__(self, master, username, grid_size, difficulty, on_finish,
+                 resume_state=None):
         super().__init__(master, bg=C_BG)
         self.username   = username
         self.grid_size  = grid_size
@@ -3040,7 +3032,10 @@ class GameScreen(tk.Frame):
         self.ml.sessions = sessions
 
         self._build()
-        self._start_new_game()
+        if resume_state:
+            self._restore_state(resume_state)
+        else:
+            self._start_new_game()
 
     # ──────────────────────────────────────────────────
     def _build(self):
@@ -3671,6 +3666,44 @@ class GameScreen(tk.Frame):
         self._stop_timer()
         self._start_new_game()
 
+    def _restore_state(self, s):
+        """Kembalikan state game setelah rebuild (misalnya ganti tema)."""
+        self.puzzle        = [row[:] for row in s["puzzle"]]
+        self.solution      = [row[:] for row in s["solution"]]
+        self.current_board = [row[:] for row in s["current_board"]]
+        self.draft_board   = {k: set(v) for k, v in s["draft_board"].items()}
+        self.draft_mode    = s["draft_mode"]
+        self.elapsed       = s["elapsed"]
+        self.game_over     = s["game_over"]
+        self.error_count   = s["error_count"]
+        self.move_count    = s["move_count"]
+        self.hints_used    = s["hints_used"]
+        self.auto_used_count = s["auto_used_count"]
+        self.hearts        = s["hearts"]
+        self.cell_errors   = dict(s["cell_errors"])
+        self.cell_last_time = dict(s["cell_last_time"])
+        self.near_miss_count = s["near_miss_count"]
+        self.guessing_count  = s["guessing_count"]
+        self.empty_cells   = s["empty_cells"]
+        self.hint_shown    = s["hint_shown"]
+        self.selected      = None
+
+        self._reset_all_canvas_colors()
+        self._update_draft_ui()
+        self._update_stat_labels()
+        self._update_hearts_ui()
+        self._update_numpad()
+        self.update_idletasks()
+        self._draw_board()
+
+        # Lanjutkan timer jika sebelumnya sedang berjalan
+        if s["timer_running"] and not self.game_over:
+            self.timer_running = True
+            # start_time digeser mundur agar elapsed tetap akurat
+            self.start_time = time.time() - self.elapsed
+            self.timer_lbl.config(fg=C_ACCENT2)
+            self._tick()
+
     def _change_difficulty(self, diff):
         self._stop_timer()
         self.difficulty = diff
@@ -3986,10 +4019,15 @@ class GameScreen(tk.Frame):
                     else:
                         cand_font_sz = 11
 
-                    # Base color for pencil marks; brighter when cell selected
-                    cand_col_base = "#C89EFF" if is_sel else "#9370DB"
-                    # Highlight color when only 1 candidate remains (naked single)
-                    cand_col_single = "#FFD700" if is_sel else "#F0883E"
+                    # Base color for pencil marks — adapts to theme
+                    is_light_theme = C_BG.upper() not in ("#0D1117", "#0D111700") and \
+                        int(C_BG[1:3], 16) > 150 if len(C_BG) >= 7 else False
+                    if is_light_theme:
+                        cand_col_base   = "#6A3DBB" if is_sel else "#7B4FCF"
+                        cand_col_single = "#CC6600" if is_sel else "#B85C00"
+                    else:
+                        cand_col_base   = "#C89EFF" if is_sel else "#9370DB"
+                        cand_col_single = "#FFD700" if is_sel else "#F0883E"
 
                     is_naked_single = (len(draft_cands) == 1)
 
@@ -4049,15 +4087,23 @@ class GameScreen(tk.Frame):
     # rendered directly in _draw_board as a large centered digit.
 
     def _blend_draft(self, hex_bg):
-        """Blend a cell background with a purple draft tint"""
+        """Blend cell background with a purple draft tint — adapts to theme."""
         try:
             r1,g1,b1 = int(hex_bg[1:3],16),int(hex_bg[3:5],16),int(hex_bg[5:7],16)
-            # Purple tint: #3A1A5A
-            r2,g2,b2 = 0x3A, 0x1A, 0x5A
-            # 40% tint
-            rr = int(r1*0.6 + r2*0.4)
-            gg = int(g1*0.6 + g2*0.4)
-            bb = int(b1*0.6 + b2*0.4)
+            # Detect light theme: bg is bright (average > 180)
+            is_light = (r1 + g1 + b1) / 3 > 180
+            if is_light:
+                # Light mode: blend with a soft violet
+                r2,g2,b2 = 0xBB, 0x99, 0xEE
+                rr = int(r1*0.65 + r2*0.35)
+                gg = int(g1*0.65 + g2*0.35)
+                bb = int(b1*0.65 + b2*0.35)
+            else:
+                # Dark mode: blend with deep purple
+                r2,g2,b2 = 0x3A, 0x1A, 0x5A
+                rr = int(r1*0.6 + r2*0.4)
+                gg = int(g1*0.6 + g2*0.4)
+                bb = int(b1*0.6 + b2*0.4)
             return f"#{rr:02x}{gg:02x}{bb:02x}"
         except:
             return hex_bg
@@ -4362,13 +4408,15 @@ class PlayerSelectScreen(tk.Frame):
         "Inconsistent": "🎲",
     }
 
-    def __init__(self, master, current_user, on_select, on_new_player):
+    def __init__(self, master, current_user, on_select, on_new_player,
+                 initial_selected=None, on_highlight=None):
         super().__init__(master, bg=C_BG)
         self.current_user  = current_user
         self.on_select     = on_select
         self.on_new_player = on_new_player
+        self.on_highlight  = on_highlight
         self.data          = load_data()
-        self._selected     = current_user   # which player detail panel shows
+        self._selected     = initial_selected if initial_selected is not None else current_user
         self._row_widgets  = {}             # name → card frame (for highlight)
         self._detail_frame = None
         self._build()
@@ -4670,6 +4718,8 @@ class PlayerSelectScreen(tk.Frame):
         # Click → update selection + detail
         def _click(_, n=name):
             self._selected = n
+            if callable(self.on_highlight):
+                self.on_highlight(n)
             self._refresh_row_highlights()
             self._refresh_detail(n)
 
@@ -5194,14 +5244,19 @@ class SudokuApp:
         self.screen = LoginScreen(self.root, self._on_login, self._show_player_select_from_login)
         self.root.after(50, self._raise_overlay)
 
-    def _show_player_select_from_login(self):
-        self._rebuild_fn = self._show_player_select_from_login
+    def _show_player_select_from_login(self, initial_selected=None):
+        def _on_highlight(name):
+            self._rebuild_fn = lambda: self._show_player_select_from_login(name)
+
+        self._rebuild_fn = lambda: self._show_player_select_from_login(initial_selected)
         self._clear()
         self.screen = PlayerSelectScreen(
             self.root,
             current_user=None,
             on_select=self._on_player_selected,
             on_new_player=self._show_login,
+            initial_selected=initial_selected,
+            on_highlight=_on_highlight,
         )
         self.root.after(50, self._raise_overlay)
 
@@ -5231,6 +5286,37 @@ class SudokuApp:
         # Preserve difficulty if user already changed it in-game
         if isinstance(self.screen, GameScreen):
             self.difficulty = self.screen.difficulty
+
+        # Snapshot seluruh game state agar tidak reset saat tema berganti
+        saved_state = None
+        if isinstance(self.screen, GameScreen):
+            gs = self.screen
+            # Hentikan timer lama agar _tick lama tidak terus berjalan
+            # setelah widget dihancurkan — mencegah duplikasi timer
+            was_running = gs.timer_running
+            gs._stop_timer()
+            saved_state = {
+                "puzzle":        [row[:] for row in gs.puzzle],
+                "solution":      [row[:] for row in gs.solution],
+                "current_board": [row[:] for row in gs.current_board],
+                "draft_board":   {k: set(v) for k, v in gs.draft_board.items()},
+                "draft_mode":    gs.draft_mode,
+                "elapsed":       gs.elapsed,
+                "timer_running": was_running,
+                "game_over":     gs.game_over,
+                "error_count":   gs.error_count,
+                "move_count":    gs.move_count,
+                "hints_used":    gs.hints_used,
+                "auto_used_count": gs.auto_used_count,
+                "hearts":        gs.hearts,
+                "cell_errors":   dict(gs.cell_errors),
+                "cell_last_time": dict(gs.cell_last_time),
+                "near_miss_count": gs.near_miss_count,
+                "guessing_count":  gs.guessing_count,
+                "empty_cells":   gs.empty_cells,
+                "hint_shown":    gs.hint_shown,
+            }
+
         self._rebuild_fn = self._show_game
         self._clear()
         self.screen = GameScreen(
@@ -5238,7 +5324,8 @@ class SudokuApp:
             username=self.username,
             grid_size=self.grid_size,
             difficulty=self.difficulty,
-            on_finish=self._on_finish)
+            on_finish=self._on_finish,
+            resume_state=saved_state)
         self.root.after(50, self._raise_overlay)
 
     def _on_finish(self, session, ml):
@@ -5263,20 +5350,26 @@ class SudokuApp:
         self.root.after(50, self._raise_overlay)
 
     # ── Ganti Pemain → tampilkan PlayerSelectScreen ───────────────
-    def _show_player_select(self, _=None):
-        self._rebuild_fn = self._show_player_select
+    def _show_player_select(self, _=None, initial_selected=None):
+        def _on_highlight(name):
+            self._rebuild_fn = lambda: self._show_player_select(initial_selected=name)
+
+        self._rebuild_fn = lambda: self._show_player_select(initial_selected=initial_selected)
         self._clear()
         self.screen = PlayerSelectScreen(
             self.root,
             current_user=self.username,
             on_select=self._on_player_selected,
             on_new_player=self._show_login,
+            initial_selected=initial_selected,
+            on_highlight=_on_highlight,
         )
         self.root.after(50, self._raise_overlay)
 
     def _on_player_selected(self, username):
         """Pemain dipilih dari PlayerSelectScreen — langsung ke grid select."""
         self.username = username
+        self._rebuild_fn = lambda: self._on_player_selected(username)
         self._clear()
         data    = load_data()
         is_new  = username not in data.get("players", {})

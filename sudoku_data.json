@@ -366,6 +366,25 @@
           "hearts_left": 1,
           "max_hearts": 9,
           "score": 0
+        },
+        {
+          "username": "Lightz",
+          "difficulty": "Hard",
+          "grid_size": 2,
+          "total_time": 61.67037105560303,
+          "moves": 16,
+          "errors": 3,
+          "hints_used": 0,
+          "auto_used": 0,
+          "completed": true,
+          "timestamp": 1778114380.0551758,
+          "empty_cells": 10,
+          "time_per_cell": 6.167,
+          "near_miss": 3,
+          "guessing": 0,
+          "hearts_left": 4,
+          "max_hearts": 4,
+          "score": 2292
         }
       ],
       "created_at": 1776915089.7187948
@@ -503,6 +522,10 @@
     "a4242": {
       "sessions": [],
       "created_at": 1777519817.1463296
+    },
+    "Bowo": {
+      "sessions": [],
+      "created_at": 1778120881.746748
     }
   },
   "leaderboard": []

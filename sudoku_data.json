@@ -385,6 +385,25 @@
           "hearts_left": 4,
           "max_hearts": 4,
           "score": 2292
+        },
+        {
+          "username": "Lightz",
+          "difficulty": "Hard",
+          "grid_size": 2,
+          "total_time": 21.247554540634155,
+          "moves": 10,
+          "errors": 0,
+          "hints_used": 0,
+          "auto_used": 0,
+          "completed": true,
+          "timestamp": 1778125850.698244,
+          "empty_cells": 10,
+          "time_per_cell": 2.125,
+          "near_miss": 0,
+          "guessing": 0,
+          "hearts_left": 4,
+          "max_hearts": 4,
+          "score": 2936
         }
       ],
       "created_at": 1776915089.7187948

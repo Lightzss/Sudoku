@@ -34,6 +34,8 @@ def _ml_schedule_retrain(ml_instance):
             # 2. Retrain GBM (difficulty) + Multi (stats) dengan data terbaru dari semua pemain
             ml_instance._ml_dirty = True
             ml_instance._train_ml_models(force=True)
+            # 3. Retrain hint timer RFR dengan ritme gerakan terbaru
+            ml_instance._train_hint_model()
         except Exception:
             pass
         finally:
@@ -50,8 +52,7 @@ except ImportError:
 # ── MACHINE LEARNING ─────────────────────────────────────────────────────────
 try:
     from sklearn.neighbors import KNeighborsClassifier
-    from sklearn.ensemble import (IsolationForest, RandomForestClassifier,
-                                   RandomForestRegressor)
+    from sklearn.ensemble import IsolationForest, RandomForestClassifier, RandomForestRegressor 
     from sklearn.multioutput import MultiOutputRegressor
     from sklearn.preprocessing import StandardScaler
     SKLEARN_AVAILABLE = True
@@ -71,6 +72,7 @@ PKL_RFR   = "RFR.pkl"                      # RandomForestRegressor, prediksi sko
 PKL_ISO   = "ISO.pkl"                      # IsolationForest + StandardScaler  (notebook: Model_Isolation_Forest)
 PKL_GBM   = "GBM.pkl"                     # RFC/GBM classifier, rekomendasi difficulty (notebook: Model_GBM)
 PKL_MULTI = "Multioutput_regressor_GBM.pkl"  # MultiOutputRegressor + StandardScaler  (notebook: Model_Multioutput_Regressor)
+PKL_HINT_RFR = "HintTimer_RFR.pkl"  # Mini-RFR untuk prediksi idle threshold hint
 
 # ── FILE MUSIK ───────────────────────────────────────────────────────────────
 MUSIC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sudoku_music.mp3")
@@ -143,15 +145,29 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sudoku_dat
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
-            with open(DATA_FILE, "r") as f:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return {"players": {}}
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    """
+    Simpan data ke sudoku_data.json secara atomic.
+    Write ke file .tmp terlebih dahulu, lalu os.replace() ke file asli.
+    Jika proses crash saat write, file asli tidak pernah tersentuh.
+    """
+    tmp = DATA_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, DATA_FILE)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 def _normalize_username(username):
     return "".join(str(username).strip().lower().split())
@@ -167,31 +183,57 @@ def _pkl_path(name: str) -> str:
     """Kembalikan path lengkap untuk file <name>.pkl di folder Models/."""
     return os.path.join(_PKL_DIR, name if name.endswith(".pkl") else f"{name}.pkl")
 
+# Cache PKL di RAM — load sekali dari disk, akses berikutnya instan dari memori.
+# Ini menghilangkan disk I/O berulang saat user ganti-ganti pemain di PlayerSelectScreen.
+_PKL_CACHE: dict = {}
+
 def _load_pkl(name: str):
     """
     Load objek dari file pkl.
+    Hasil di-cache di _PKL_CACHE — baca disk hanya terjadi sekali per
+    nama file per sesi. Akses berikutnya langsung dari RAM (~0ms).
     Return objek jika berhasil, None jika file tidak ada atau gagal.
     """
+    if name in _PKL_CACHE:
+        return _PKL_CACHE[name]
     path = _pkl_path(name)
     try:
         if os.path.exists(path):
             with open(path, "rb") as f:
-                return pickle.load(f)
+                obj = pickle.load(f)
+            _PKL_CACHE[name] = obj
+            return obj
     except Exception:
         pass
     return None
 
+def _warmup_pkl_cache():
+    for name in (PKL_KNN, PKL_RFR, PKL_ISO, PKL_GBM, PKL_MULTI, PKL_HINT_RFR):
+        try:
+            _load_pkl(name)
+        except Exception:
+            pass
+
 def _save_pkl(name: str, obj) -> bool:
     """
-    Simpan objek ke file pkl.
+    Simpan objek ke file pkl secara atomic dan perbarui cache RAM.
+    Write ke file .tmp terlebih dahulu, lalu os.replace() ke file asli.
+    Jika proses crash saat write, file pkl lama tidak pernah terkorupsi.
     Return True jika berhasil.
     """
     path = _pkl_path(name)
+    tmp  = path + ".tmp"
     try:
-        with open(path, "wb") as f:
+        with open(tmp, "wb") as f:
             pickle.dump(obj, f)
+        os.replace(tmp, path)
+        _PKL_CACHE[name] = obj   # perbarui cache agar tidak stale
         return True
     except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         return False
 
 def _find_existing_username(data, username):
@@ -400,7 +442,7 @@ DIFF_THEMES = {
         "error_fg":       "#FF7B7B",
         "grid_line":      "#2EA043",
         "remove_pct":     0.35,
-        "emoji":          "🌱",
+        "emoji":          "🍃",
         # ── Highlight warna adaptif ──────────────────────────────────────
         # Palet: toska-hijau — kontras jelas di atas cell_bg gelap
         "hl_box":         "#0E3020",   # kotak yg sama (ringan)
@@ -475,7 +517,7 @@ DIFF_THEMES_LIGHT = {
         "error_fg":       "#CF222E",
         "grid_line":      "#1A7F37",
         "remove_pct":     0.35,
-        "emoji":          "🌱",
+        "emoji":          "🍃",
         "hl_box":         "#D1FAE5",
         "hl_rowcol":      "#A7F3D0",
         "hl_same_bg":     "#6EE7B7",
@@ -852,6 +894,9 @@ class PlayerMLEngine:
     def __init__(self):
         self.sessions       = []
         self.adaptive_idle  = 15.0
+        # Lock mencegah _train_models dipanggil bersamaan dari main thread
+        # (saat predict) dan background thread (saat _ml_schedule_retrain)
+        self._train_lock    = threading.Lock()
         # sklearn model instances (None sampai di-train)
         self._knn           = None
         self._knn_scaler    = None
@@ -920,218 +965,223 @@ class PlayerMLEngine:
         Re-train semua model ML menggunakan gabungan data sintetis
         + sesi aktual pemain. Dipanggil lazy saat dibutuhkan.
         Load dari pkl jika tersedia; simpan kembali setelah training.
+        Dilindungi _train_lock agar aman dipanggil dari main thread
+        (saat prediksi) maupun background thread (saat retrain terjadwal).
         """
         if not SKLEARN_AVAILABLE or not self._models_dirty:
             return
+        if not self._train_lock.acquire(blocking=False):
+            return   # retrain sedang berjalan di thread lain — lewati
         self._models_dirty = False
         n = len(self.sessions)
-
-        # ── 1. KNN: gabung sintetis + aktual (semua pemain) ──────────
-        # Jika ada data aktual, selalu retrain agar model up-to-date.
-        # Jika tidak ada data aktual, coba load dari KNN.pkl dulu.
-        if n == 0:
-            cached = _load_pkl(PKL_KNN)
-            if cached is not None:
-                self._knn        = cached["model"]
-                self._knn_scaler = cached["scaler"]
-            # Jika belum ada pkl, _pretrain_knn sudah menanganinya.
-        else:
-            try:
-                from sklearn.model_selection import cross_val_score, StratifiedKFold
-                _syn_base = _load_pkl(PKL_KNN)
-                if (
-                    _syn_base is not None
-                    and "X_syn" in _syn_base
-                    and "y_syn" in _syn_base
-                ):
-                    X_syn = np.array(_syn_base["X_syn"], dtype=float)
-                    y_syn = np.array(_syn_base["y_syn"], dtype=int)
-                else:
-                    X_syn = np.array(_KNN_SYNTHETIC_X, dtype=float)   # fallback 20 sampel
-                    y_syn = np.array(_KNN_SYNTHETIC_Y, dtype=int)
-
-                # Baca best params dari notebook (tersimpan di meta); fallback ke default
-                _meta = (_syn_base or {}).get("meta", {})
-                _best_k       = int(_meta.get("n_neighbors",
-                                   getattr(self, "_knn_best_k", 3)))
-                _best_metric  = str(_meta.get("metric",
-                                   getattr(self, "_knn_best_metric", "euclidean")))
-                _best_weights = str(_meta.get("weights",
-                                   getattr(self, "_knn_best_weights", "uniform")))
-                # CV F1-macro notebook (dari meta) — dipakai sebagai baseline perbandingan
-                _notebook_cv_f1 = float(_meta.get("cv_f1_macro", 0.0))
-
-                # Kumpulkan sesi dari SEMUA pemain untuk memperkaya training data
-                all_sessions = list(self.sessions)
-                _n_actual = len(all_sessions)   # jumlah sesi nyata sebelum gabung lintas pemain
+        try:
+            # Jika ada data aktual, selalu retrain agar model up-to-date.
+            # Jika tidak ada data aktual, coba load dari KNN.pkl dulu.
+            if n == 0:
+                cached = _load_pkl(PKL_KNN)
+                if cached is not None:
+                    self._knn        = cached["model"]
+                    self._knn_scaler = cached["scaler"]
+                # Jika belum ada pkl, _pretrain_knn sudah menanganinya.
+            else:
                 try:
-                    _all_data = load_data()
-                    for _payload in _all_data.get("players", {}).values():
-                        for _s in _payload.get("sessions", []):
-                            _fp = _session_fingerprint(_s)
-                            if not any(_session_fingerprint(x) == _fp for x in self.sessions):
-                                all_sessions.append(_s)
+                    from sklearn.model_selection import cross_val_score, StratifiedKFold
+                    _syn_base = _load_pkl(PKL_KNN)
+                    if (
+                        _syn_base is not None
+                        and "X_syn" in _syn_base
+                        and "y_syn" in _syn_base
+                    ):
+                        X_syn = np.array(_syn_base["X_syn"], dtype=float)
+                        y_syn = np.array(_syn_base["y_syn"], dtype=int)
+                    else:
+                        X_syn = np.array(_KNN_SYNTHETIC_X, dtype=float)   # fallback 20 sampel
+                        y_syn = np.array(_KNN_SYNTHETIC_Y, dtype=int)
+
+                    # Baca best params dari notebook (tersimpan di meta); fallback ke default
+                    _meta = (_syn_base or {}).get("meta", {})
+                    _best_k       = int(_meta.get("n_neighbors",
+                                       getattr(self, "_knn_best_k", 3)))
+                    _best_metric  = str(_meta.get("metric",
+                                       getattr(self, "_knn_best_metric", "euclidean")))
+                    _best_weights = str(_meta.get("weights",
+                                       getattr(self, "_knn_best_weights", "uniform")))
+                    # CV F1-macro notebook (dari meta) — dipakai sebagai baseline perbandingan
+                    _notebook_cv_f1 = float(_meta.get("cv_f1_macro", 0.0))
+
+                    # Kumpulkan sesi dari SEMUA pemain untuk memperkaya training data
+                    all_sessions = list(self.sessions)
+                    _n_actual = len(all_sessions)   # jumlah sesi nyata sebelum gabung lintas pemain
+                    try:
+                        _all_data = load_data()
+                        for _payload in _all_data.get("players", {}).values():
+                            for _s in _payload.get("sessions", []):
+                                _fp = _session_fingerprint(_s)
+                                if not any(_session_fingerprint(x) == _fp for x in self.sessions):
+                                    all_sessions.append(_s)
+                    except Exception:
+                        pass
+
+                    # PROTEKSI: jika total sesi nyata < 20, pakai model notebook di memori saja
+                    # tanpa retrain — data terlalu sedikit untuk menandingi notebook (2500 sampel)
+                    if _n_actual < 20 and _syn_base is not None:
+                        self._knn        = _syn_base["model"]
+                        self._knn_scaler = _syn_base["scaler"]
+                        # Jangan return — lanjut ke RFR dan ISO
+                    else:
+                        feats_actual = [self._session_to_vector(s) for s in all_sessions]
+                        X_act = np.array(feats_actual, dtype=float)
+                        y_act = np.array(
+                            [_PLAYER_TYPES_ORDER.index(self._rule_based_type(s))
+                             for s in all_sessions], dtype=int)
+                        X_all = np.vstack([X_syn, X_act])
+                        y_all = np.concatenate([y_syn, y_act])
+
+                        scaler = StandardScaler()
+                        X_sc   = scaler.fit_transform(X_all)
+                        k = min(_best_k, len(X_all))
+                        knn = KNeighborsClassifier(
+                            n_neighbors=k,
+                            metric=_best_metric,
+                            weights=_best_weights,
+                        )
+                        knn.fit(X_sc, y_all)
+
+                        # ── Validasi dengan CV F1-macro (bukan training accuracy) ──
+                        # CV F1-macro jauh lebih jujur karena menggunakan held-out fold,
+                        # sehingga apple-to-apple dengan metrik notebook.
+                        _n_splits = min(5, len(np.unique(y_all)),
+                                        min(np.bincount(y_all)))
+                        _n_splits = max(2, _n_splits)
+                        _cv_scores = cross_val_score(
+                            knn, X_sc, y_all,
+                            cv=StratifiedKFold(n_splits=_n_splits, shuffle=True,
+                                               random_state=42),
+                            scoring="f1_macro",
+                        )
+                        new_cv_f1 = float(_cv_scores.mean())
+
+                        # Hanya timpa KNN.pkl jika CV F1 baru benar-benar lebih baik
+                        # dari CV F1 notebook (bukan dari training score lama)
+                        _ref_f1 = _notebook_cv_f1 if _notebook_cv_f1 > 0 else (
+                            float(_syn_base["accuracy"]) if _syn_base and "accuracy" in _syn_base else 0.0
+                        )
+                        _save_new_knn = new_cv_f1 >= _ref_f1 + 0.005   # harus lebih baik ≥ 0.5%
+
+                        self._knn        = knn
+                        self._knn_scaler = scaler
+                        if _save_new_knn:
+                            _save_pkl(PKL_KNN, {
+                                "model":    knn,
+                                "scaler":   scaler,
+                                "accuracy": new_cv_f1,   # simpan CV F1, bukan training acc
+                                "X_syn":    X_syn.tolist(),
+                                "y_syn":    y_syn.tolist(),
+                                "meta": {
+                                    "n_neighbors":  k,
+                                    "metric":       _best_metric,
+                                    "weights":      _best_weights,
+                                    "cv_f1_macro":  new_cv_f1,
+                                    "n_train":      len(X_all),
+                                    "n_actual":     _n_actual,
+                                },
+                            })
                 except Exception:
                     pass
 
-                # PROTEKSI: jika total sesi nyata < 20, pakai model notebook di memori saja
-                # tanpa retrain — data terlalu sedikit untuk menandingi notebook (2500 sampel)
-                if _n_actual < 20 and _syn_base is not None:
-                    self._knn        = _syn_base["model"]
-                    self._knn_scaler = _syn_base["scaler"]
-                    # Jangan return — lanjut ke RFR dan ISO
+            # ── 2. Random Forest Regressor: prediksi skor sesi berikutnya ──
+            # Sesuai notebook Model_Random_Forest_Regressor.ipynb:
+            # - 4 fitur: [session_idx, time_per_cell, error_rate, hint_rate]
+            # - TIDAK butuh StandardScaler (tree-based, invariant terhadap scaling)
+            # - Output: prediksi skor sesi berikutnya (satu nilai kontinu ≥ 0)
+            if n >= 3:
+                cached_rfr = _load_pkl(PKL_RFR)
+                # PROTEKSI: jika sesi aktual < 15, selalu pakai model notebook
+                # RFR notebook dilatih dari 300 pemain sintetis — jauh lebih representatif
+                # dari 3-14 sesi satu pemain yang cenderung overfit ke pola individu
+                if cached_rfr is not None and n < 15:
+                    self._rfr = cached_rfr["model"]
                 else:
-                    feats_actual = [self._session_to_vector(s) for s in all_sessions]
-                    X_act = np.array(feats_actual, dtype=float)
-                    y_act = np.array(
-                        [_PLAYER_TYPES_ORDER.index(self._rule_based_type(s))
-                         for s in all_sessions], dtype=int)
-                    X_all = np.vstack([X_syn, X_act])
-                    y_all = np.concatenate([y_syn, y_act])
+                    try:
+                        X_rfr, y_rfr = [], []
+                        for i, s in enumerate(self.sessions):
+                            mv  = max(s.get("moves", 1), 1)
+                            # Gunakan time_per_cell yang tersimpan (total_time/empty_cells),
+                            # konsisten dengan definisi notebook Model_Random_Forest_Regressor.
+                            # Fallback ke total_time/moves hanya jika field belum ada.
+                            tpc = s.get("time_per_cell",
+                                        s.get("total_time", 0) / max(s.get("empty_cells", mv), 1))
+                            er  = s.get("errors", 0)     / mv
+                            hr  = s.get("hints_used", 0) / mv
+                            sc  = s.get("score", 0) or 0
+                            X_rfr.append([i, tpc, er, hr])
+                            y_rfr.append(sc)
+                        X_rfr = np.array(X_rfr, dtype=float)
+                        y_rfr = np.array(y_rfr, dtype=float)
+                        rfr   = RandomForestRegressor(
+                            n_estimators=100,
+                            max_depth=10,
+                            min_samples_leaf=2,
+                            random_state=42,
+                            oob_score=True,
+                            n_jobs=-1,
+                        )
+                        rfr.fit(X_rfr, y_rfr)
 
-                    scaler = StandardScaler()
-                    X_sc   = scaler.fit_transform(X_all)
-                    k = min(_best_k, len(X_all))
-                    knn = KNeighborsClassifier(
-                        n_neighbors=k,
-                        metric=_best_metric,
-                        weights=_best_weights,
-                    )
-                    knn.fit(X_sc, y_all)
+                        # ── Validasi dengan OOB score (bukan training R²) ──
+                        # OOB score adalah estimasi out-of-sample yang built-in di RF —
+                        # setiap sampel hanya dinilai oleh pohon yang tidak melihatnya.
+                        # Ini jauh lebih jujur dari training R² yang selalu mendekati 1.0.
+                        new_oob = float(getattr(rfr, "oob_score_", -999))
+                        _old_ref_r2 = cached_rfr.get("r2", 0.0) if cached_rfr else 0.0
+                        # Hanya simpan jika OOB score benar-benar lebih baik dari
+                        # R² model lama (tanpa toleransi negatif — harus murni lebih baik)
+                        _save_new_rfr = (new_oob != -999) and (new_oob > _old_ref_r2)
+                        self._rfr = rfr
+                        if _save_new_rfr:
+                            _save_pkl(PKL_RFR, {
+                                "model": rfr,
+                                "r2":    new_oob,   # simpan OOB score, bukan training R²
+                                "meta": {
+                                    "model_type":    "RandomForestRegressor",
+                                    "needs_scaler":  False,
+                                    "feature_names": ["session_idx", "time_per_cell",
+                                                      "error_rate", "hint_rate"],
+                                    "n_train":       len(X_rfr),
+                                    "score_type":    "oob_score",
+                                },
+                            })
+                    except Exception:
+                        self._rfr = None
 
-                    # ── Validasi dengan CV F1-macro (bukan training accuracy) ──
-                    # CV F1-macro jauh lebih jujur karena menggunakan held-out fold,
-                    # sehingga apple-to-apple dengan metrik notebook.
-                    _n_splits = min(5, len(np.unique(y_all)),
-                                    min(np.bincount(y_all)))
-                    _n_splits = max(2, _n_splits)
-                    _cv_scores = cross_val_score(
-                        knn, X_sc, y_all,
-                        cv=StratifiedKFold(n_splits=_n_splits, shuffle=True,
-                                           random_state=42),
-                        scoring="f1_macro",
-                    )
-                    new_cv_f1 = float(_cv_scores.mean())
-
-                    # Hanya timpa KNN.pkl jika CV F1 baru benar-benar lebih baik
-                    # dari CV F1 notebook (bukan dari training score lama)
-                    _ref_f1 = _notebook_cv_f1 if _notebook_cv_f1 > 0 else (
-                        float(_syn_base["accuracy"]) if _syn_base and "accuracy" in _syn_base else 0.0
-                    )
-                    _save_new_knn = new_cv_f1 >= _ref_f1 + 0.005   # harus lebih baik ≥ 0.5%
-
-                    self._knn        = knn
-                    self._knn_scaler = scaler
-                    if _save_new_knn:
-                        _save_pkl(PKL_KNN, {
-                            "model":    knn,
-                            "scaler":   scaler,
-                            "accuracy": new_cv_f1,   # simpan CV F1, bukan training acc
-                            "X_syn":    X_syn.tolist(),
-                            "y_syn":    y_syn.tolist(),
-                            "meta": {
-                                "n_neighbors":  k,
-                                "metric":       _best_metric,
-                                "weights":      _best_weights,
-                                "cv_f1_macro":  new_cv_f1,
-                                "n_train":      len(X_all),
-                                "n_actual":     _n_actual,
-                            },
-                        })
-            except Exception:
-                pass
-
-        # ── 2. Random Forest Regressor: prediksi skor sesi berikutnya ──
-        # Sesuai notebook Model_Random_Forest_Regressor.ipynb:
-        # - 4 fitur: [session_idx, time_per_cell, error_rate, hint_rate]
-        # - TIDAK butuh StandardScaler (tree-based, invariant terhadap scaling)
-        # - Output: prediksi skor sesi berikutnya (satu nilai kontinu ≥ 0)
-        if n >= 3:
-            cached_rfr = _load_pkl(PKL_RFR)
-            # PROTEKSI: jika sesi aktual < 15, selalu pakai model notebook
-            # RFR notebook dilatih dari 300 pemain sintetis — jauh lebih representatif
-            # dari 3-14 sesi satu pemain yang cenderung overfit ke pola individu
-            if cached_rfr is not None and n < 15:
-                self._rfr = cached_rfr["model"]
-            else:
-                try:
-                    X_rfr, y_rfr = [], []
-                    for i, s in enumerate(self.sessions):
-                        mv  = max(s.get("moves", 1), 1)
-                        # Gunakan time_per_cell yang tersimpan (total_time/empty_cells),
-                        # konsisten dengan definisi notebook Model_Random_Forest_Regressor.
-                        # Fallback ke total_time/moves hanya jika field belum ada.
-                        tpc = s.get("time_per_cell",
-                                    s.get("total_time", 0) / max(s.get("empty_cells", mv), 1))
-                        er  = s.get("errors", 0)     / mv
-                        hr  = s.get("hints_used", 0) / mv
-                        sc  = s.get("score", 0) or 0
-                        X_rfr.append([i, tpc, er, hr])
-                        y_rfr.append(sc)
-                    X_rfr = np.array(X_rfr, dtype=float)
-                    y_rfr = np.array(y_rfr, dtype=float)
-                    rfr   = RandomForestRegressor(
-                        n_estimators=100,
-                        max_depth=10,
-                        min_samples_leaf=2,
-                        random_state=42,
-                        oob_score=True,
-                        n_jobs=-1,
-                    )
-                    rfr.fit(X_rfr, y_rfr)
-
-                    # ── Validasi dengan OOB score (bukan training R²) ──
-                    # OOB score adalah estimasi out-of-sample yang built-in di RF —
-                    # setiap sampel hanya dinilai oleh pohon yang tidak melihatnya.
-                    # Ini jauh lebih jujur dari training R² yang selalu mendekati 1.0.
-                    new_oob = float(getattr(rfr, "oob_score_", -999))
-                    _old_ref_r2 = cached_rfr.get("r2", 0.0) if cached_rfr else 0.0
-                    # Hanya simpan jika OOB score benar-benar lebih baik dari
-                    # R² model lama (tanpa toleransi negatif — harus murni lebih baik)
-                    _save_new_rfr = (new_oob != -999) and (new_oob > _old_ref_r2)
-                    self._rfr = rfr
-                    if _save_new_rfr:
-                        _save_pkl(PKL_RFR, {
-                            "model": rfr,
-                            "r2":    new_oob,   # simpan OOB score, bukan training R²
-                            "meta": {
-                                "model_type":    "RandomForestRegressor",
-                                "needs_scaler":  False,
-                                "feature_names": ["session_idx", "time_per_cell",
-                                                  "error_rate", "hint_rate"],
-                                "n_train":       len(X_rfr),
-                                "score_type":    "oob_score",
-                            },
-                        })
-                except Exception:
-                    self._rfr = None
-
-        # ── 3. Isolation Forest: deteksi sesi anomali ────────────────      
-        if n >= 5:
-            # Selalu prioritaskan pkl v2 (berisi optimal_threshold)
-            cached_iso = _load_pkl(PKL_ISO)
-            if cached_iso is not None:
-                self._iso           = cached_iso["model"]
-                self._iso_scaler    = cached_iso["scaler"]
-                self._iso_threshold = float(cached_iso.get("optimal_threshold", 0.0))
-            else:
-                # Fallback: retrain dari sesi aktual jika pkl belum ada
-                try:
-                    X_iso = np.array(
-                        [self._session_to_vector(s) for s in self.sessions],
-                        dtype=float)
-                    scaler_iso = StandardScaler()
-                    X_iso_sc   = scaler_iso.fit_transform(X_iso)
-                    iso        = IsolationForest(
-                        contamination=0.05, random_state=42, n_estimators=100)
-                    iso.fit(X_iso_sc)
-                    self._iso           = iso
-                    self._iso_scaler    = scaler_iso
-                    self._iso_threshold = 0.0
-                except Exception:
-                    self._iso           = None
-                    self._iso_scaler    = None
-                    self._iso_threshold = 0.0
+            # ── 3. Isolation Forest: deteksi sesi anomali ────────────────      
+            if n >= 5:
+                # Selalu prioritaskan pkl v2 (berisi optimal_threshold)
+                cached_iso = _load_pkl(PKL_ISO)
+                if cached_iso is not None:
+                    self._iso           = cached_iso["model"]
+                    self._iso_scaler    = cached_iso["scaler"]
+                    self._iso_threshold = float(cached_iso.get("optimal_threshold", 0.0))
+                else:
+                    # Fallback: retrain dari sesi aktual jika pkl belum ada
+                    try:
+                        X_iso = np.array(
+                            [self._session_to_vector(s) for s in self.sessions],
+                            dtype=float)
+                        scaler_iso = StandardScaler()
+                        X_iso_sc   = scaler_iso.fit_transform(X_iso)
+                        iso        = IsolationForest(
+                            contamination=0.05, random_state=42, n_estimators=100)
+                        iso.fit(X_iso_sc)
+                        self._iso           = iso
+                        self._iso_scaler    = scaler_iso
+                        self._iso_threshold = 0.0
+                    except Exception:
+                        self._iso           = None
+                        self._iso_scaler    = None
+                        self._iso_threshold = 0.0
+        finally:
+            self._train_lock.release()
 
     def _session_to_vector(self, s):
         """Konversi 1 sesi dict → feature vector [6 nilai]."""
@@ -1937,12 +1987,13 @@ class DifficultyScreen(tk.Frame):
         "Hard":   _icon_hard.__func__,
     }
 
-    def __init__(self, master, username, grid_size, on_select):
+    def __init__(self, master, username, grid_size, on_select, on_back=None):
         super().__init__(master, bg=C_BG)
         self.username     = username
-        self.current_user = username   # FIX: dipakai di _build()
+        self.current_user = username
         self.grid_size    = grid_size
         self.on_select    = on_select
+        self.on_back      = on_back
         self.data         = load_data()
         self._build()
 
@@ -1975,7 +2026,34 @@ class DifficultyScreen(tk.Frame):
         gbar.after(100, lambda: draw_gradient_bar(gbar))
 
         hdr_inner = tk.Frame(hdr, bg=C_SURFACE)
-        hdr_inner.pack(pady=18)
+        hdr_inner.pack(pady=18, fill="x")
+
+        if callable(self.on_back):
+            back_row = tk.Frame(hdr_inner, bg=C_SURFACE)
+            back_row.pack(fill="x", padx=28, pady=(0, 6))
+
+            back_btn = tk.Button(
+                back_row,
+                text="←  Kembali ke Pilih Grid",
+                font=("Segoe UI", 9),
+                bg=C_SURFACE,
+                fg=C_TEXT_DIM,
+                activebackground=C_SURFACE2,
+                activeforeground=C_TEXT,
+                relief="flat",
+                cursor="hand2",
+                padx=8, pady=4,
+                highlightbackground=C_BORDER,
+                highlightthickness=1,
+                command=self.on_back,
+            )
+            back_btn.pack(side="left")
+
+            # Efek hover
+            back_btn.bind("<Enter>", lambda _: back_btn.config(
+                bg=C_SURFACE2, fg=C_TEXT))
+            back_btn.bind("<Leave>", lambda _: back_btn.config(
+                bg=C_SURFACE, fg=C_TEXT_DIM))
 
         # Title row
         N_label = self.grid_size * self.grid_size
@@ -1990,7 +2068,7 @@ class DifficultyScreen(tk.Frame):
 
         subtitle = f"Bermain sebagai  @{self.current_user}  ·  pilih tingkat kesulitan untuk mulai"
         tk.Label(hdr_inner, text=subtitle,
-                 font=("Segoe UI", 9), bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(4,0))
+                 font=("Segoe UI", 9), bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(4, 0))
 
         # AI recommendation badge
         if has_history:
@@ -4266,7 +4344,7 @@ class GameScreen(tk.Frame):
                 gg = int(g1*0.6 + g2*0.4)
                 bb = int(b1*0.6 + b2*0.4)
             return f"#{rr:02x}{gg:02x}{bb:02x}"
-        except:
+        except Exception:
             return hex_bg
 
     def _blend(self, hex1, hex2):
@@ -4274,7 +4352,7 @@ class GameScreen(tk.Frame):
             r1,g1,b1 = int(hex1[1:3],16),int(hex1[3:5],16),int(hex1[5:7],16)
             r2,g2,b2 = int(hex2[1:3],16),int(hex2[3:5],16),int(hex2[5:7],16)
             return f"#{(r1+r2)//2:02x}{(g1+g2)//2:02x}{(b1+b2)//2:02x}"
-        except:
+        except Exception:
             return hex1
 
     # ── Win check ─────────────────────────────────────
@@ -4359,24 +4437,42 @@ class GameScreen(tk.Frame):
         self.status_var.set("✅ Semua sel sudah terisi dengan benar!")
 
     def _idle_check(self):
-        if self.game_over: return
+        if self.game_over:
+            return
         if self.timer_running:
             idle = time.time() - self.last_action
+
+            # Hitung sisa sel kosong sebagai konteks untuk threshold
+            remaining_empty = sum(
+                1 for r in range(self.N) for c in range(self.N)
+                if self.current_board[r][c] == 0
+                and self.puzzle[r][c] == 0
+            )
+            remaining_pct = remaining_empty / max(self.empty_cells, 1)
+
             give, reason = self.ml.should_give_hint(
-                idle, self.error_count, self.move_count)
+                idle,
+                self.error_count,
+                self.move_count,
+                grid_size=self.grid_size,
+                difficulty=self.difficulty,
+                remaining_pct=remaining_pct,
+            )
             if give and not self.hint_shown:
                 self.hint_shown = True
                 if reason == "idle":
-                    self._banner(f"Sudah diam {idle:.0f} detik. Perlu hint? 💡",
-                                 auto_hint=True)
+                    self._banner(
+                        f"Sudah diam {idle:.0f} detik. Perlu hint? 💡",
+                        auto_hint=True)
                 elif reason == "errors":
                     if self.difficulty == "Easy":
                         self._banner(
                             "Banyak kesalahan! Coba gunakan hint untuk membantu. 💡",
                             auto_hint=True)
                     else:
-                        self._banner("Banyak kesalahan! Coba turunkan level? 💡",
-                                     suggest_lower=True)
+                        self._banner(
+                            "Banyak kesalahan! Coba turunkan level? 💡",
+                            suggest_lower=True)
         self.idle_after = self.master.after(3000, self._idle_check)
 
     def _banner(self, msg, auto_hint=False, suggest_lower=False):
@@ -4441,7 +4537,7 @@ class GameScreen(tk.Frame):
         self.timer_running = False
         if self.idle_after:
             try: self.master.after_cancel(self.idle_after)
-            except: pass
+            except Exception: pass
 
     def _tick(self):
         if self.timer_running:
@@ -4790,15 +4886,18 @@ class PlayerSelectScreen(tk.Frame):
                   relief="flat", cursor="hand2", pady=10, padx=24,
                   command=self.on_new_player).pack(side="left", padx=(0,10))
 
-        back_text = "↩  KEMBALI KE LOGIN" if not self.current_user else "↩  KEMBALI"
-        back_cmd = self.on_new_player if not self.current_user else (lambda: self.on_select(self.current_user))
-        tk.Button(foot_inner,
-                  text=back_text,
-                  font=("Segoe UI", 10),
-                  bg=C_SURFACE2, fg=C_TEXT_DIM,
-                  activebackground=C_BORDER, activeforeground=C_TEXT,
-                  relief="flat", cursor="hand2", pady=10, padx=18,
-                  command=back_cmd).pack(side="left")
+        # Tombol KEMBALI hanya tampil saat in-game (current_user sudah login).
+        # Saat awal pemilihan pemain (current_user=None), tidak ada yang bisa
+        # dibatalkan — user wajib memilih pemain atau membuat pemain baru.
+        if self.current_user:
+            tk.Button(foot_inner,
+                      text="↩  KEMBALI",
+                      font=("Segoe UI", 10),
+                      bg=C_SURFACE2, fg=C_TEXT_DIM,
+                      activebackground=C_BORDER, activeforeground=C_TEXT,
+                      relief="flat", cursor="hand2", pady=10, padx=18,
+                      command=lambda: self.on_select(self.current_user)
+                      ).pack(side="left")
 
     # ── Left panel: compact player row ───────────────────────────
     def _player_row(self, parent, name, scroll_canvas):
@@ -4938,7 +5037,7 @@ class PlayerSelectScreen(tk.Frame):
 
     # ── Right panel: full player detail ──────────────────────────
     def _refresh_detail(self, username):
-        # Clear old content
+        # Bersihkan panel kanan
         for w in self._right_panel.winfo_children():
             w.destroy()
 
@@ -4948,7 +5047,51 @@ class PlayerSelectScreen(tk.Frame):
                      font=("Segoe UI", 12), bg=C_BG, fg=C_TEXT_DIM).pack(expand=True)
             return
 
-        st       = self._get_stats(username)
+        # ── Skeleton loading state — tampil instan saat klik ─────────
+        # User langsung melihat feedback, bukan layar beku.
+        skel = tk.Frame(self._right_panel, bg=C_BG)
+        skel.pack(fill="both", expand=True)
+        tk.Label(skel, text="⏳  Memuat profil...",
+                 font=("Segoe UI", 13), bg=C_BG, fg=C_TEXT_DIM
+                 ).pack(expand=True)
+
+        # Tag untuk membatalkan request lama jika user klik pemain lain
+        # sebelum request sebelumnya selesai
+        req_id = object()
+        self._pending_req = req_id
+
+        def _compute():
+            """Jalankan _get_stats di background thread — tidak pernah block UI."""
+            try:
+                result = self._get_stats(username)
+            except Exception:
+                result = None
+            # Jadwalkan render kembali ke main thread via after()
+            try:
+                self._right_panel.after(0, lambda: _render(result))
+            except Exception:
+                pass   # widget sudah dihancurkan (user pindah layar)
+
+        def _render(st):
+            """Render hasil _get_stats di main thread — aman untuk tkinter."""
+            # Batalkan jika user sudah klik pemain lain sementara komputasi berjalan
+            if getattr(self, "_pending_req", None) is not req_id:
+                return
+            # Hapus skeleton
+            for w in self._right_panel.winfo_children():
+                try: w.destroy()
+                except Exception: pass
+            if st is None:
+                tk.Label(self._right_panel, text="⚠  Gagal memuat profil.",
+                         font=("Segoe UI", 12), bg=C_BG, fg=C_ERROR).pack(expand=True)
+                return
+            # Bangun UI detail seperti sebelumnya
+            self._build_detail_ui(st, username)
+
+        threading.Thread(target=_compute, daemon=True).start()
+
+    def _build_detail_ui(self, st, username):
+        """Bangun UI detail pemain di main thread setelah _get_stats selesai di background."""
         tc       = st["type_color"]
         is_me    = (username == self.current_user)
         PANEL_BG = C_BG
@@ -5330,6 +5473,9 @@ class SudokuApp:
 
         self._show_login()
         self._start_overlay_loop()
+        # Warm-up PKL cache di background — load semua model ke RAM sebelum
+        # user sempat klik pemain pertama, sehingga _get_stats() langsung instan.
+        threading.Thread(target=_warmup_pkl_cache, daemon=True).start()
 
     # ── Musik helpers ──────────────────────────────────────────────────
     def _init_music(self):
@@ -5426,14 +5572,24 @@ class SudokuApp:
     def _start_overlay_loop(self):
         """Loop 300 ms yang terus-menerus menjaga overlay tetap di atas."""
         self._raise_overlay()
-        self.root.after(300, self._start_overlay_loop)
+        self._overlay_loop_id = self.root.after(300, self._start_overlay_loop)
+
+    def _stop_overlay_loop(self):
+        """Batalkan loop overlay — dipanggil saat app tutup."""
+        _id = getattr(self, "_overlay_loop_id", None)
+        if _id is not None:
+            try:
+                self.root.after_cancel(_id)
+            except Exception:
+                pass
+            self._overlay_loop_id = None
 
     def _clear(self):
         if self.screen:
             try:
                 self.screen.place_forget()
                 self.screen.destroy()
-            except: pass
+            except Exception: pass
             self.screen = None
         self._raise_overlay()
 
@@ -5474,7 +5630,8 @@ class SudokuApp:
         self._clear()
         self.screen = DifficultyScreen(
             self.root, self.username, self.grid_size,
-            on_select=self._on_diff_selected)
+            on_select=self._on_diff_selected,
+            on_back=self._back_to_grid_select)
         self.root.after(50, self._raise_overlay)
 
     def _on_diff_selected(self, diff):
@@ -5546,7 +5703,17 @@ class SudokuApp:
         self._clear()
         self.screen = DifficultyScreen(
             self.root, self.username, self.grid_size,
-            on_select=self._on_diff_selected)
+            on_select=self._on_diff_selected,
+            on_back=self._back_to_grid_select)
+        self.root.after(50, self._raise_overlay)
+
+    def _back_to_grid_select(self):
+        greeting = "Halo kembali"
+        self._rebuild_fn = lambda: self._back_to_grid_select()
+        self._clear()
+        self.screen = GridSizeScreen(
+            self.root, self.username, greeting,
+            on_select=self._on_grid_selected)
         self.root.after(50, self._raise_overlay)
 
     # ── Ganti Pemain → tampilkan PlayerSelectScreen ───────────────
@@ -5588,6 +5755,7 @@ class SudokuApp:
 
     def _exit(self, _=None):
         if messagebox.askyesno("Keluar", "Yakin ingin keluar?", parent=self.root):
+            self._stop_overlay_loop()
             self.root.destroy()
 
     # ── Theme toggle helpers ───────────────────────────────────────
@@ -5797,17 +5965,23 @@ def _ml_init(self):
     self._stats_model   = None
     self._stats_scaler  = None
     self._iso_threshold = 0.0
-    self._ml_dirty = True
+    self._ml_dirty      = True
+    self._hint_rfr      = None   # model hint timer
+    self._hint_scaler   = None   # scaler hint timer
     # knn best params — di-populate oleh _pretrain_knn / _train_models
     self._knn_best_k       = 3
     self._knn_best_metric  = "euclidean"
     self._knn_best_weights = "uniform"
     # Load RFR.pkl dari notebook saat init agar predict_next_score siap sejak sesi ke-3
-    # RFR tidak butuh scaler sehingga langsung bisa dipakai
     if SKLEARN_AVAILABLE:
         _rfr_pkg = _load_pkl(PKL_RFR)
         if _rfr_pkg is not None:
             self._rfr = _rfr_pkg["model"]
+        # Load hint timer model jika sudah ada dari sesi sebelumnya
+        _hint_pkg = _load_pkl(PKL_HINT_RFR)
+        if _hint_pkg is not None:
+            self._hint_rfr    = _hint_pkg["model"]
+            self._hint_scaler = _hint_pkg.get("scaler", None)
     self._train_ml_models(force=False)
 
 
@@ -6345,6 +6519,154 @@ def _ml_get_summary(self, session=None):
         "rfr_meta":                _rfr_meta,
     }
 
+# ── Hint Timer: training ─────────────────────────────────────────────────────
+def _ml_train_hint_model(self):
+    """
+    Latih RandomForestRegressor kecil khusus untuk memprediksi idle threshold.
+    Label = ritme gerakan alami pemain × faktor kesabaran per konteks.
+    Data dari SEMUA pemain agar model lebih general sejak awal.
+    """
+    if not SKLEARN_AVAILABLE:
+        return
+
+    all_player_sessions = _ml_all_sessions()
+    flat = [s for player_sess in all_player_sessions for s in player_sess]
+    if len(flat) < 3:
+        return
+
+    X, y = [], []
+    for s in flat:
+        moves    = max(s.get("moves", 1), 1)
+        total_t  = float(s.get("total_time", 0) or 0)
+        tpc      = float(s.get("time_per_cell", total_t / moves))
+        er       = s.get("errors", 0)     / moves
+        hr       = s.get("hints_used", 0) / moves
+        cr       = 1.0 if s.get("completed", False) else 0.0
+        total_err = max(s.get("errors", 0), 1)
+        nmr      = s.get("near_miss", 0)  / total_err
+        gur      = s.get("guessing", 0)   / total_err
+        grid_n   = int(s.get("grid_size", 3)) ** 2
+        diff_int = {"Easy": 0, "Normal": 1, "Hard": 2}.get(
+            s.get("difficulty", "Normal"), 1)
+
+        # Label: inter-move time × faktor kesabaran kontekstual
+        # Pemain lambat dan grid besar → label tinggi (beri waktu lebih)
+        # Pemain sering hint → label rendah (tawarkan lebih cepat)
+        inter_move   = total_t / moves
+        patience     = 1.5 + diff_int * 0.4 + (grid_n / 81) * 0.6
+        hint_factor  = max(0.5, 1.0 - hr * 0.6)
+        label = max(8.0, min(120.0, inter_move * patience * hint_factor))
+
+        # remaining_pct di-set 0.5 saat training (rata-rata tengah permainan)
+        X.append([tpc, er, hr, cr, nmr, gur, float(grid_n), float(diff_int), 0.5])
+        y.append(label)
+
+    if len(X) < 3:
+        return
+
+    try:
+        X_np = np.array(X, dtype=float)
+        y_np = np.array(y, dtype=float)
+
+        scaler = StandardScaler()
+        X_sc   = scaler.fit_transform(X_np)
+
+        rfr = RandomForestRegressor(
+            n_estimators=80,
+            max_depth=6,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1,
+        )
+        rfr.fit(X_sc, y_np)
+
+        self._hint_rfr    = rfr
+        self._hint_scaler = scaler
+        _save_pkl(PKL_HINT_RFR, {"model": rfr, "scaler": scaler})
+    except Exception:
+        pass
+
+
+# ── Hint Timer: prediksi threshold ───────────────────────────────────────────
+def _ml_compute_hint_threshold(self, grid_size=3, difficulty="Normal",
+                                remaining_pct=1.0):
+    """
+    Prediksi idle threshold adaptif per-pemain menggunakan RFR hint timer.
+
+    Fitur (9 dimensi):
+      [avg_tpc, error_rate, hint_rate, completion_rate,
+       near_miss_rate, guessing_rate, grid_n, diff_int, remaining_pct]
+
+    Output: detik idle sebelum banner hint muncul (float, 8–120 detik).
+
+    Semakin besar threshold → semakin sabar sistem menunggu sebelum menawarkan hint.
+    Contoh hasil yang wajar:
+      - Pemain Speedrunner 4×4 Easy: ~10 detik
+      - Pemain Careful 9×9 Normal:   ~45 detik
+      - Pemain baru 9×9 Hard:        ~60 detik
+    """
+    feat          = _orig_pmle_extract(self)
+    avg_tpc       = float(feat.get("avg_time_per_cell", 10.0))
+    error_rate    = float(feat.get("error_rate", 0.0))
+    hint_rate     = float(feat.get("hint_rate", 0.0))
+    completion_rate = float(feat.get("completion_rate", 0.5))
+    near_miss_rate  = float(feat.get("near_miss_rate", 0.0))
+    guessing_rate   = float(feat.get("guessing_rate", 0.0))
+
+    grid_n   = float(int(grid_size) ** 2)
+    diff_int = float({"Easy": 0, "Normal": 1, "Hard": 2}.get(difficulty, 1))
+    rem_pct  = float(max(0.0, min(1.0, remaining_pct)))
+
+    fv = np.array([[avg_tpc, error_rate, hint_rate, completion_rate,
+                    near_miss_rate, guessing_rate, grid_n, diff_int, rem_pct]],
+                   dtype=float)
+
+    # Coba model yang sudah ada di memori
+    hint_rfr    = getattr(self, "_hint_rfr",    None)
+    hint_scaler = getattr(self, "_hint_scaler", None)
+    if hint_rfr is not None:
+        try:
+            fv_sc = hint_scaler.transform(fv) if hint_scaler is not None else fv
+            pred  = float(hint_rfr.predict(fv_sc)[0])
+            return max(8.0, min(120.0, pred))
+        except Exception:
+            pass
+
+    # Fallback: load dari PKL jika belum di-load ke RAM
+    try:
+        cached = _load_pkl(PKL_HINT_RFR)
+        if cached is not None:
+            self._hint_rfr    = cached["model"]
+            self._hint_scaler = cached.get("scaler", None)
+            fv_sc = self._hint_scaler.transform(fv) if self._hint_scaler else fv
+            pred  = float(self._hint_rfr.predict(fv_sc)[0])
+            return max(8.0, min(120.0, pred))
+    except Exception:
+        pass
+
+    # Estimasi langsung dari fitur numerik (bukan per-tipe) ketika model belum ada
+    base     = max(8.0, avg_tpc * 2.0)
+    grid_mul = 1.0 + (grid_n - 4.0) / 77.0 * 0.5    # 4×4→1.0, 9×9→1.5
+    diff_mul = 1.0 + diff_int * 0.3                   # Easy→1.0, Normal→1.3, Hard→1.6
+    hint_adj = max(0.5, 1.0 - hint_rate * 0.5)        # sering hint → lebih cepat tawarkan
+    rem_adj  = 0.8 + rem_pct * 0.4                    # awal game lebih sabar
+    return max(8.0, min(120.0, base * grid_mul * diff_mul * hint_adj * rem_adj))
+
+
+# ── Hint Timer: pengganti should_give_hint ───────────────────────────────────
+def _ml_should_give_hint(self, idle, errors, moves,
+                          grid_size=3, difficulty="Normal", remaining_pct=1.0):
+    """
+    Versi ML dari should_give_hint.
+    Threshold dihitung tiap panggilan agar responsif terhadap progres sesi.
+    """
+    threshold = _ml_compute_hint_threshold(self, grid_size, difficulty, remaining_pct)
+    if idle > threshold:
+        return True, "idle"
+    if moves > 5 and errors / max(moves, 1) > 0.4:
+        return True, "errors"
+    return False, None
+
 
 PlayerMLEngine.__init__ = _ml_init
 PlayerMLEngine.add_session = _ml_add_session
@@ -6353,10 +6675,9 @@ PlayerMLEngine.predict_stat_profile = _ml_predict_profile
 PlayerMLEngine.recommend_next_challenge = _ml_recommend_next_challenge
 PlayerMLEngine.recommend_difficulty = _ml_recommend_difficulty
 PlayerMLEngine.get_summary = _ml_get_summary
-
-
-_orig_on_finish = SudokuApp._on_finish
-
+PlayerMLEngine._train_hint_model      = _ml_train_hint_model
+PlayerMLEngine.compute_hint_threshold = _ml_compute_hint_threshold
+PlayerMLEngine.should_give_hint       = _ml_should_give_hint
 
 def _ml_dashboard_session(session, ml):
     """

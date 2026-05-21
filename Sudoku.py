@@ -537,8 +537,9 @@ DIFF_THEMES = {
     "Easy": {
         "accent":         "#7EE787",   # hijau cerah utama
         "accent2":        "#2EA043",
-        "cell_bg":        "#0D2818",   # latar sel kosong
-        "cell_fixed_bg":  "#143321",   # latar angka sistem
+        "cell_bg":        "#0D2818",   # latar sel kosong (paling gelap)
+        "cell_fixed_bg":  "#143321",   # latar angka sistem (sedikit lebih cerah)
+        "cell_user_bg":   "#1E5235",   # latar input user — jelas berbeda (+25 brightness dari kosong)
         "cell_fixed_fg":  "#7EE787",   # teks angka sistem
         "cell_user_fg":   "#A8F0B0",   # teks input user
         "highlight":      "#1F6B3A",   # sel terpilih (hijau solid)
@@ -550,19 +551,20 @@ DIFF_THEMES = {
         "emoji":          "🍃",
         # ── Highlight warna adaptif ──────────────────────────────────────
         # Palet: toska-hijau — kontras jelas di atas cell_bg gelap
-        "hl_box":         "#0E3020",   # kotak yg sama (ringan)
-        "hl_rowcol":      "#144A2A",   # baris/kolom (lebih terang)
+        "hl_box":         "#112C1E",   # kotak yg sama (ringan)
+        "hl_rowcol":      "#174F2E",   # baris/kolom (lebih terang)
         "hl_same_bg":     "#1B6B38",   # angka yg sama (paling mencolok)
         "hl_same_fg_fix": "#B8FFD0",   # fg fixed same-num
         "hl_same_fg_usr": "#D0FFE0",   # fg user same-num
         "hl_sel_border":  "#7EE787",   # border efek sel terpilih
+        "error_indicator": "#FF6B6B",  # warna indicator error (selalu terlihat di atas semua layer)
     },
-    # ─── NORMAL: palet biru safir — tajam & fokus ──────────────────────────
     "Normal": {
         "accent":         "#58A6FF",
         "accent2":        "#1F6FEB",
-        "cell_bg":        "#0D1A2E",
-        "cell_fixed_bg":  "#112244",
+        "cell_bg":        "#0D1A2E",   # latar sel kosong (paling gelap)
+        "cell_fixed_bg":  "#112244",   # latar angka sistem (sedikit lebih cerah)
+        "cell_user_bg":   "#1C3C6E",   # latar input user — jelas berbeda (+20 brightness dari kosong)
         "cell_fixed_fg":  "#79C0FF",
         "cell_user_fg":   "#B0D4FF",
         "highlight":      "#1C4880",   # biru solid
@@ -574,36 +576,39 @@ DIFF_THEMES = {
         "emoji":          "⚡",
         # ── Highlight warna adaptif ──────────────────────────────────────
         # Palet: biru safir — kontras tinggi di latar biru gelap
-        "hl_box":         "#0E2040",   # kotak yg sama
-        "hl_rowcol":      "#152E5A",   # baris/kolom
+        "hl_box":         "#102244",   # kotak yg sama
+        "hl_rowcol":      "#163460",   # baris/kolom
         "hl_same_bg":     "#1A4A8C",   # angka yg sama
         "hl_same_fg_fix": "#A8D4FF",
         "hl_same_fg_usr": "#C8E4FF",
         "hl_sel_border":  "#58A6FF",
+        "error_indicator": "#FF6B6B",
     },
     # ─── HARD: palet merah coral — intens & menegangkan ────────────────────
     "Hard": {
         "accent":         "#FF7B7B",
         "accent2":        "#DA3633",
-        "cell_bg":        "#2D0D0D",
-        "cell_fixed_bg":  "#3D1515",
+        "cell_bg":        "#2D0D0D",   # latar sel kosong (paling gelap)
+        "cell_fixed_bg":  "#3D1515",   # latar angka sistem (sedikit lebih cerah)
+        "cell_user_bg":   "#7E3030",   # input user — jauh lebih terang dari kosong #2D0D0D
         "cell_fixed_fg":  "#FF7B7B",
         "cell_user_fg":   "#FFAAAA",
         "highlight":      "#6B2020",   # merah solid terang
         "hover":          "#421515",
-        "error_bg":       "#5A1010",
-        "error_fg":       "#FF4444",
+        "error_bg":       "#3A1E00",
+        "error_fg":       "#FF8C00",
         "grid_line":      "#DA3633",
         "remove_pct":     0.65,
         "emoji":          "🔥",
         # ── Highlight warna adaptif ──────────────────────────────────────
         # Palet: merah-ungu — hangat, mencolok di atas latar merah gelap
-        "hl_box":         "#3A1010",   # kotak yg sama (merah sangat gelap)
-        "hl_rowcol":      "#501A1A",   # baris/kolom (merah tua)
+        "hl_box":         "#3E1414",   # kotak yg sama — sedikit di atas cell_bg
+        "hl_rowcol":      "#562020",   # baris/kolom — jelas terlihat di atas cell_bg
         "hl_same_bg":     "#7A2020",   # angka yg sama (merah cerah)
         "hl_same_fg_fix": "#FFB8B8",
         "hl_same_fg_usr": "#FFD0D0",
         "hl_sel_border":  "#FF7B7B",
+        "error_indicator": "#FF8C00",  # oranye terang — sama sekali berbeda dari palet merah
     },
 }
 
@@ -612,8 +617,9 @@ DIFF_THEMES_LIGHT = {
     "Easy": {
         "accent":         "#1A7F37",
         "accent2":        "#0D5622",
-        "cell_bg":        "#F0FFF4",
-        "cell_fixed_bg":  "#DCFCE7",
+        "cell_bg":        "#F0FFF4",   # sel kosong — hampir putih hijau
+        "cell_fixed_bg":  "#DCFCE7",   # angka sistem — hijau muda
+        "cell_user_bg":   "#96E0B4",   # input user — hijau saturasi tinggi, kontras vs #F0FFF4
         "cell_fixed_fg":  "#15803D",
         "cell_user_fg":   "#166534",
         "highlight":      "#BBF7D0",
@@ -623,19 +629,20 @@ DIFF_THEMES_LIGHT = {
         "grid_line":      "#1A7F37",
         "remove_pct":     0.35,
         "emoji":          "🍃",
-        "hl_box":         "#D1FAE5",
-        "hl_rowcol":      "#A7F3D0",
+        "hl_box":         "#C8F5DC",   # sedikit lebih jenuh dari cell_fixed_bg
+        "hl_rowcol":      "#9DE8BA",   # jelas terlihat sebagai cross-highlight
         "hl_same_bg":     "#6EE7B7",
         "hl_same_fg_fix": "#064E3B",
         "hl_same_fg_usr": "#065F46",
         "hl_sel_border":  "#1A7F37",
+        "error_indicator": "#CF222E",
     },
-    # ─── NORMAL: biru medium ─────────────────────────────────────────────────
     "Normal": {
         "accent":         "#0969DA",
         "accent2":        "#0550AE",
-        "cell_bg":        "#EFF6FF",
-        "cell_fixed_bg":  "#DBEAFE",
+        "cell_bg":        "#EFF6FF",   # sel kosong — biru sangat muda
+        "cell_fixed_bg":  "#DBEAFE",   # angka sistem — biru muda
+        "cell_user_bg":   "#A8C4F5",   # input user — biru saturasi lebih, kontras vs #EFF6FF
         "cell_fixed_fg":  "#1D4ED8",
         "cell_user_fg":   "#1E40AF",
         "highlight":      "#BFDBFE",
@@ -645,34 +652,37 @@ DIFF_THEMES_LIGHT = {
         "grid_line":      "#0969DA",
         "remove_pct":     0.50,
         "emoji":          "⚡",
-        "hl_box":         "#DBEAFE",
-        "hl_rowcol":      "#BFDBFE",
+        "hl_box":         "#CDE5FF",   # sedikit lebih jenuh dari cell_fixed_bg
+        "hl_rowcol":      "#A8C8FA",   # cross-highlight biru yang terlihat jelas
         "hl_same_bg":     "#93C5FD",
         "hl_same_fg_fix": "#1E3A8A",
         "hl_same_fg_usr": "#1E40AF",
         "hl_sel_border":  "#0969DA",
+        "error_indicator": "#CF222E",
     },
     # ─── HARD: merah coral lembut ────────────────────────────────────────────
     "Hard": {
         "accent":         "#CF222E",
         "accent2":        "#A40E26",
-        "cell_bg":        "#FFF5F5",
-        "cell_fixed_bg":  "#FFE4E6",
+        "cell_bg":        "#FFF5F5",   # sel kosong — hampir putih merah muda
+        "cell_fixed_bg":  "#FFE4E6",   # angka sistem — merah muda
+        "cell_user_bg":   "#EDAABB",   # input user — pink jenuh, kontras tajam vs #FFF5F5
         "cell_fixed_fg":  "#BE123C",
         "cell_user_fg":   "#9F1239",
         "highlight":      "#FECDD3",
         "hover":          "#FFE4E6",
-        "error_bg":       "#FFD7D5",
-        "error_fg":       "#A40E26",
+        "error_bg":       "#FFE8CC",
+        "error_fg":       "#CC5500",
         "grid_line":      "#CF222E",
         "remove_pct":     0.65,
         "emoji":          "🔥",
-        "hl_box":         "#FFE4E6",
-        "hl_rowcol":      "#FECDD3",
+        "hl_box":         "#FFD6DA",   # sedikit lebih jenuh dari cell_fixed_bg
+        "hl_rowcol":      "#F8A8B4",   # cross-highlight pink yang terlihat jelas
         "hl_same_bg":     "#FDA4AF",
         "hl_same_fg_fix": "#881337",
         "hl_same_fg_usr": "#9F1239",
         "hl_sel_border":  "#CF222E",
+        "error_indicator": "#CC5500",  # oranye gelap — berbeda dari pink Hard
     },
 }
 
@@ -5263,7 +5273,7 @@ class GameScreen(tk.Frame):
                 else:
                     if val != 0:
                         is_err = self._is_cell_error(r, c)
-                        bg = t["error_bg"] if is_err else t["cell_bg"]
+                        bg = t["error_bg"] if is_err else t.get("cell_user_bg", t["cell_bg"])
                         fg = t["error_fg"] if is_err else t["cell_user_fg"]
                     else:
                         bg = t["cell_bg"]
@@ -5385,12 +5395,53 @@ class GameScreen(tk.Frame):
                             anchor="center"
                         )
 
+                # ── User-filled (benar): accent border + pip ──────
+                # Border 1px warna accent — terang, per-tema, selalu persistent.
+                # Pip solid 3px di bawah = sinyal kedua yang tidak bergantung bg.
+                # Width 1px membedakannya dari error (2px) & selected (2px).
+                if not is_fixed and val != 0 and not self._is_cell_error(r, c) and not is_sel:
+                    acc = t["accent"]
+                    cv.create_rectangle(
+                        1, 1, px - 2, px - 2,
+                        outline=acc, width=1
+                    )
+                    # Pip solid: bar pendek di tengah-bawah sel
+                    pip_w = max(8, px // 3)
+                    pip_x1 = (px - pip_w) // 2
+                    pip_x2 = pip_x1 + pip_w
+                    cv.create_rectangle(
+                        pip_x1, px - 5, pip_x2, px - 3,
+                        fill=acc, outline=""
+                    )
+
                 # ── Selected cell border glow ──────────────────────
                 if is_sel:
                     cv.create_rectangle(
                         1, 1, px-2, px-2,
                         outline=t["hl_sel_border"],
                         width=2
+                    )
+
+                # ── Error indicator — selalu di layer PALING ATAS ──
+                # Digambar SETELAH semua elemen lain agar tidak tertimpa
+                # highlight, selected, maupun user border.
+                # Menggunakan warna 'error_indicator' yang dipilih khusus
+                # untuk kontras maksimum terhadap palet tema (oranye untuk Hard).
+                if not is_fixed and val != 0 and self._is_cell_error(r, c):
+                    err_col = t.get("error_indicator", t["error_fg"])
+                    # Border 2px — sama tebalnya dengan selected border
+                    cv.create_rectangle(
+                        1, 1, px - 2, px - 2,
+                        outline=err_col,
+                        width=2
+                    )
+                    # Tanda "!" kecil di pojok kanan atas — second signal
+                    cv.create_text(
+                        px - 3, 3,
+                        text="!",
+                        fill=err_col,
+                        font=("Segoe UI", 8, "bold"),
+                        anchor="ne"
                     )
 
     # _draw_draft_numbers removed — draft is now always single value,

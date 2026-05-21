@@ -518,9 +518,35 @@
           "hearts_left": 9,
           "max_hearts": 9,
           "score": 1530
+        },
+        {
+          "username": "Lightz",
+          "difficulty": "Hard",
+          "grid_size": 2,
+          "total_time": 14.018502473831177,
+          "moves": 10,
+          "errors": 0,
+          "hints_used": 0,
+          "auto_used": 0,
+          "completed": true,
+          "timestamp": 1779255246.8436325,
+          "empty_cells": 10,
+          "time_per_cell": 1.402,
+          "near_miss": 0,
+          "guessing": 0,
+          "hearts_left": 4,
+          "max_hearts": 4,
+          "score": 2957
         }
       ],
-      "created_at": 1776915089.7187948
+      "created_at": 1776915089.7187948,
+      "tutorial_done": true,
+      "achievements": [
+        "kilat",
+        "pemula_berhasil",
+        "konsisten",
+        "tanpa_petunjuk"
+      ]
     },
     "feli": {
       "sessions": [

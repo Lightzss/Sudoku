@@ -49,6 +49,96 @@ try:
 except ImportError:
     PYGAME_AVAILABLE = False
 
+
+# ── PIL (Score Card PNG) ──────────────────────────────
+try:
+    from PIL import Image as _PilImage, ImageDraw as _PilDraw, ImageFont as _PilFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# =====================================================
+# SOUND EFFECTS ENGINE
+# =====================================================
+_SFX_CORRECT = None
+_SFX_ERROR   = None
+_SFX_WIN     = None
+
+def _build_sfx():
+    global _SFX_CORRECT, _SFX_ERROR, _SFX_WIN
+    if not PYGAME_AVAILABLE:
+        return
+    try:
+        import numpy as _np
+        SR = 44100
+        def _make_sound(arr):
+            arr = _np.clip(arr, -1.0, 1.0)
+            s16 = (arr * 32767).astype(_np.int16)
+            stereo = _np.column_stack([s16, s16])
+            return pygame.sndarray.make_sound(stereo)
+        # SFX 1: klik ringan benar (sine 880 Hz, 80 ms)
+        t = _np.linspace(0, 0.08, int(SR * 0.08), endpoint=False)
+        _SFX_CORRECT = _make_sound(_np.sin(2 * _np.pi * 880 * t) * _np.exp(-t * 40) * 0.45)
+        # SFX 2: buzz error (sawtooth 200 Hz + noise, 120 ms)
+        t = _np.linspace(0, 0.12, int(SR * 0.12), endpoint=False)
+        saw = 2 * (t * 200 % 1) - 1
+        noise = _np.random.uniform(-0.3, 0.3, len(t))
+        _SFX_ERROR = _make_sound((saw * 0.5 + noise * 0.15) * _np.exp(-t * 25) * 0.55)
+        # SFX 3: fanfare menang (arpeggio C-E-G, tiap 150 ms)
+        chunks = []
+        for freq in [523.25, 659.25, 783.99]:
+            t = _np.linspace(0, 0.15, int(SR * 0.15), endpoint=False)
+            env = _np.exp(-t * 6)
+            chunks.append((_np.sin(2*_np.pi*freq*t)*0.5 + _np.sin(2*_np.pi*freq*2*t)*0.2)*env*0.6)
+        _SFX_WIN = _make_sound(_np.concatenate(chunks))
+    except Exception:
+        pass
+
+def _play_sfx(sound_obj):
+    if not PYGAME_AVAILABLE or sound_obj is None:
+        return
+    try:
+        sound_obj.play()
+    except Exception:
+        pass
+
+# =====================================================
+# ACHIEVEMENT ENGINE
+# =====================================================
+ACHIEVEMENTS = {
+    "pemula_berhasil": {"id":"pemula_berhasil","nama":"Pemula Berhasil","emoji":"🎖","desc":"Selesaikan puzzle pertamamu!","warna":"#7EE787"},
+    "tanpa_petunjuk":  {"id":"tanpa_petunjuk", "nama":"Tanpa Petunjuk", "emoji":"🦅","desc":"Selesaikan puzzle tanpa satu pun hint.","warna":"#58A6FF"},
+    "kilat":           {"id":"kilat",          "nama":"Kilat",          "emoji":"⚡","desc":"Selesaikan 4×4 di bawah 60 detik.","warna":"#FFD700"},
+    "konsisten":       {"id":"konsisten",      "nama":"Konsisten",      "emoji":"🔥","desc":"Selesaikan 3 sesi berturut-turut.","warna":"#FF7B7B"},
+}
+
+def _evaluate_achievements(username, session, all_sessions):
+    """Evaluasi badge baru. Kembalikan list id yang baru diraih."""
+    if not session.get("completed", False):
+        return []
+    data     = load_data()
+    p        = data["players"].setdefault(username, {})
+    unlocked = set(p.get("achievements", []))
+    earned   = []
+    done     = [s for s in all_sessions if s.get("completed", False)]
+    if "pemula_berhasil" not in unlocked and len(done) >= 1:
+        earned.append("pemula_berhasil")
+    if ("tanpa_petunjuk" not in unlocked and
+            session.get("hints_used", 0) == 0 and
+            session.get("auto_used", 0) == 0):
+        earned.append("tanpa_petunjuk")
+    if ("kilat" not in unlocked and
+            session.get("grid_size") == 2 and
+            session.get("total_time", 9999) < 60):
+        earned.append("kilat")
+    if "konsisten" not in unlocked and len(done) >= 3:
+        if all(s.get("completed", False) for s in done[-3:]):
+            earned.append("konsisten")
+    if earned:
+        unlocked.update(earned)
+        p["achievements"] = list(unlocked)
+        save_data(data)
+    return earned
 # ── MACHINE LEARNING ─────────────────────────────────────────────────────────
 try:
     from sklearn.neighbors import KNeighborsClassifier
@@ -1456,6 +1546,514 @@ class AnimatedBG(tk.Canvas):
         self.after(50, self._run)
 
 # =====================================================
+# SCREEN: ATTRACTOR / DEMO  (idle screen for booth)
+# =====================================================
+# Aktif otomatis setelah IDLE_TIMEOUT detik tanpa interaksi
+# di LoginScreen.  Menampilkan:
+#   Kiri  — statistik global pemain hari ini
+#   Tengah — board Sudoku 9x9 yang dipecahkan AI secara
+#             animasi lambat (replay hist dari solve_backtracking_mrv)
+#   Kanan  — kartu fitur ML
+# Sembarang key / klik / gerakan mouse → kembali ke login.
+# =====================================================
+class AttractorScreen(tk.Frame):
+    IDLE_TIMEOUT  = 45     # detik idle sebelum attractor muncul
+    STEP_DELAY    = 110    # ms per langkah solver (terlihat lambat & "berpikir")
+    DONE_PAUSE    = 2800   # ms jeda setelah puzzle selesai sebelum puzzle baru
+    CELL_PX       = 50     # ukuran piksel tiap sel grid
+
+    # ── Palet warna sesuai tema ──────────────────────────────────
+    @staticmethod
+    def _tc():
+        """Kembalikan dict warna sesuai tema aktif (dark / light)."""
+        if _CURRENT_THEME_NAME == "dark":
+            return {
+                "bg":       "#060A10",
+                "board_bg": "#0D1A2E",
+                "box_line": "#3D85C8",   # biru medium — kontras kuat di atas dark
+                "fixed":    ("#112244", "#79C0FF"),
+                "ai":       ("#0C2E18", "#7EE787"),
+                "backtrack":("#3B1212", "#FF7B7B"),
+                "empty":    ("#0D1A2E", "#2A3A4A"),
+            }
+        else:
+            return {
+                "bg":       C_BG,
+                "board_bg": "#EFF6FF",
+                "box_line": "#0969DA",   # biru GitHub — solid di atas latar terang
+                "fixed":    ("#DBEAFE", "#1D4ED8"),
+                "ai":       ("#DCFCE7", "#166534"),
+                "backtrack":("#FFE4E6", "#BE123C"),
+                "empty":    ("#EFF6FF", "#94A3B8"),
+            }
+
+    def __init__(self, master, on_dismiss):
+        tc = self._tc()
+        super().__init__(master, bg=tc["bg"])
+        self.on_dismiss  = on_dismiss
+        self._step_job   = None
+        self._blink_job  = None
+        self._hist       = []
+        self._hist_idx   = 0
+        self._board      = []
+        self._puzzle     = []
+        self._canvases   = {}
+        self._running    = True
+        self._last_motion = time.time()
+        self._build()
+        self.after(80, self._new_puzzle)
+
+    # ── Layout utama ─────────────────────────────────────────────
+    def _build(self):
+        tc  = self._tc()
+        bg  = tc["bg"]
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # Partikel background — warna mengikuti tema
+        abg = AnimatedBG(self, bg=bg, highlightthickness=0)
+        abg.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # Tangkap semua interaksi untuk dismiss
+        self.bind_all("<Key>",       self._on_keypress,  add="+")
+        self.bind_all("<Button-1>",  self._dismiss,      add="+")
+        self.bind_all("<Motion>",    self._on_motion,    add="+")
+
+        # ── Header ───────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=bg)
+        hdr.pack(fill="x", side="top")
+
+        hdr_inner = tk.Frame(hdr, bg=bg)
+        hdr_inner.pack(pady=(18, 6))
+
+        title_row = tk.Frame(hdr_inner, bg=bg)
+        title_row.pack()
+        tk.Label(title_row, text="⬛  SUDOKU AI",
+                 font=("Segoe UI", 30, "bold"),
+                 bg=bg, fg=C_TEXT).pack(side="left")
+        tk.Label(title_row, text="   LIVE DEMO",
+                 font=("Segoe UI", 18, "bold"),
+                 bg=bg, fg=C_ACCENT).pack(side="left")
+
+        tk.Label(hdr_inner,
+                 text="AI memainkan Sudoku menggunakan MRV Backtracking Solver",
+                 font=("Segoe UI", 11),
+                 bg=bg, fg=C_TEXT_DIM).pack(pady=(4, 0))
+
+        gbar = tk.Canvas(hdr, height=4, bg=bg, highlightthickness=0)
+        gbar.pack(fill="x", pady=(10, 0))
+        gbar.after(120, lambda: draw_gradient_bar(gbar))
+
+        # ── Baris konten tengah ───────────────────────────────────
+        content_wrap = tk.Frame(self, bg=bg)
+        content_wrap.pack(side="top", fill="both", expand=True)
+
+        content = tk.Frame(content_wrap, bg=bg)
+        content.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Panel kiri
+        left = tk.Frame(content, bg=C_SURFACE, width=248,
+                         highlightbackground=C_BORDER, highlightthickness=1)
+        left.pack(side="left", padx=(0, 18), fill="y")
+        left.pack_propagate(False)
+        self._build_stats_panel(left)
+
+        # Panel tengah (board)
+        center = tk.Frame(content, bg=bg)
+        center.pack(side="left")
+
+        self.status_var = tk.StringVar(value="⚙  Menghasilkan puzzle...")
+        tk.Label(center, textvariable=self.status_var,
+                 font=("Segoe UI", 10, "bold"),
+                 bg=bg, fg=C_ACCENT2).pack(pady=(0, 8))
+
+        self.grid_frame = tk.Frame(center, bg=bg)
+        self.grid_frame.pack()
+
+        self.moves_var = tk.StringVar(value="Langkah: 0  |  Backtrack: 0")
+        tk.Label(center, textvariable=self.moves_var,
+                 font=("Consolas", 10),
+                 bg=bg, fg=C_TEXT_DIM).pack(pady=(8, 0))
+
+        # Panel kanan
+        right = tk.Frame(content, bg=C_SURFACE, width=248,
+                          highlightbackground=C_BORDER, highlightthickness=1)
+        right.pack(side="left", padx=(18, 0), fill="y")
+        right.pack_propagate(False)
+        self._build_ml_panel(right)
+
+        # ── Footer ───────────────────────────────────────────────
+        foot = tk.Frame(self, bg=bg)
+        foot.pack(fill="x", side="bottom")
+
+        gbar2 = tk.Canvas(foot, height=4, bg=bg, highlightthickness=0)
+        gbar2.pack(fill="x")
+        gbar2.after(160, lambda: draw_gradient_bar(gbar2))
+
+        tap_row = tk.Frame(foot, bg=bg)
+        tap_row.pack(pady=14)
+
+        self._tap_lbl = tk.Label(
+            tap_row,
+            text="▶   TEKAN SEMBARANG TOMBOL ATAU KLIK UNTUK MULAI   ◀",
+            font=("Segoe UI", 13, "bold"),
+            bg=bg, fg=C_ACCENT,
+        )
+        self._tap_lbl.pack()
+        self._blink_start()
+
+    # ── Panel kiri: statistik global ─────────────────────────────
+    def _build_stats_panel(self, parent):
+        data    = load_data()
+        players = data.get("players", {})
+        today   = time.strftime("%Y-%m-%d")
+
+        total_players   = len(players)
+        sessions_today  = 0
+        sessions_all    = 0
+        completions     = 0
+        best_per_player = {}
+
+        for pname, pdata in players.items():
+            for s in pdata.get("sessions", []):
+                sessions_all += 1
+                ts = s.get("timestamp", 0)
+                try:
+                    if time.strftime("%Y-%m-%d", time.localtime(ts)) == today:
+                        sessions_today += 1
+                except Exception:
+                    pass
+                if s.get("completed"):
+                    completions += 1
+                sc = int(s.get("score", 0) or 0)
+                if sc > best_per_player.get(pname, 0):
+                    best_per_player[pname] = sc
+
+        completion_pct = completions / max(sessions_all, 1) * 100
+
+        # Header
+        tk.Label(parent, text="STATISTIK GLOBAL",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=C_SURFACE, fg=C_TEXT_DIM).pack(anchor="w", padx=14, pady=(14, 6))
+        tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x")
+
+        # Stat cards — teks label tanpa emoji agar rendering stabil
+        stat_items = [
+            ("Pemain",          str(total_players),          C_ACCENT),
+            ("Game Hari Ini",   str(sessions_today),         C_ACCENT2),
+            ("Total Game",      str(sessions_all),           C_TEXT),
+            ("Completion Rate", f"{completion_pct:.0f}%",   C_ACCENT2),
+        ]
+        sf = tk.Frame(parent, bg=C_SURFACE)
+        sf.pack(fill="x", padx=12, pady=8)
+        for lbl, val, color in stat_items:
+            row = tk.Frame(sf, bg=C_SURFACE2,
+                           highlightbackground=C_BORDER, highlightthickness=1)
+            row.pack(fill="x", pady=3)
+            inn = tk.Frame(row, bg=C_SURFACE2)
+            inn.pack(fill="x", padx=10, pady=6)
+            tk.Label(inn, text=lbl,
+                     font=("Segoe UI", 8), bg=C_SURFACE2, fg=C_TEXT_DIM).pack(anchor="w")
+            tk.Label(inn, text=val,
+                     font=("Segoe UI", 15, "bold"),
+                     bg=C_SURFACE2, fg=color).pack(anchor="w")
+
+        # Top scorers
+        tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x", pady=(2, 0))
+        tk.Label(parent, text="🏆  TOP PEMAIN",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=C_SURFACE, fg=C_GOLD).pack(anchor="w", padx=14, pady=(10, 6))
+
+        top3 = sorted(best_per_player.items(), key=lambda x: x[1], reverse=True)[:3]
+
+        # Emoji medal peringkat — 🥇🥈🥉 dengan warna teks sesuai logam
+        rank_medals = ["🥇", "🥈", "🥉"]
+        rank_colors = [C_GOLD, "#B0B8C8", "#CD9B6A"]
+
+        lf = tk.Frame(parent, bg=C_SURFACE)
+        lf.pack(fill="x", padx=14)
+        if top3:
+            for i, (name, score) in enumerate(top3):
+                medal  = rank_medals[i]
+                mcolor = rank_colors[i]
+                r = tk.Frame(lf, bg=C_SURFACE)
+                r.pack(fill="x", pady=4)
+                tk.Label(r, text=medal,
+                         font=("Segoe UI", 16),
+                         bg=C_SURFACE, fg=mcolor).pack(side="left")
+                tk.Label(r, text=f" {name[:13]}",
+                         font=("Segoe UI", 10, "bold"),
+                         bg=C_SURFACE, fg=C_TEXT).pack(side="left")
+                tk.Label(r, text=str(score),
+                         font=("Segoe UI", 9),
+                         bg=C_SURFACE, fg=C_ACCENT2).pack(side="right")
+        else:
+            tk.Label(lf, text="Belum ada data skor",
+                     font=FONT_SMALL, bg=C_SURFACE, fg=C_TEXT_DIM).pack()
+
+    # ── Panel kanan: fitur ML ─────────────────────────────────────
+    def _build_ml_panel(self, parent):
+        tk.Label(parent, text="🤖  FITUR AI & ML",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=C_SURFACE, fg=C_PURPLE).pack(anchor="w", padx=14, pady=(14, 6))
+        tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x")
+
+        features = [
+            ("🎯", "KNN  Player Typing",
+             "Klasifikasi tipe pemain dari\n6 fitur sesi bermain",     C_ACCENT),
+            ("📈", "Random Forest Regressor",
+             "Prediksi skor sesi berikutnya\nberbasis pola historis",  C_ACCENT2),
+            ("🔍", "Isolation Forest",
+             "Deteksi sesi anomali dari\npola bermain abnormal",       C_WARN),
+            ("⚡", "MRV Backtracking Solver",
+             "Algoritma AI optimal dengan\nheuristic Min-Remaining-Val", C_PURPLE),
+            ("🧩", "GBM Difficulty Recommender",
+             "Rekomendasi tingkat kesulitan\nberikutnya via GBM",      C_PINK),
+            ("⏱️",  "Adaptive Hint Timer",
+             "Threshold hint adaptif\nper profil gaya bermain",        C_GOLD),
+        ]
+
+        ff = tk.Frame(parent, bg=C_SURFACE)
+        ff.pack(fill="x", padx=12, pady=8)
+        for icon, title, desc, color in features:
+            card = tk.Frame(ff, bg=C_SURFACE2,
+                            highlightbackground=color, highlightthickness=1)
+            card.pack(fill="x", pady=3)
+            inn = tk.Frame(card, bg=C_SURFACE2)
+            inn.pack(fill="x", padx=10, pady=6)
+            tk.Label(inn, text=f"{icon}  {title}",
+                     font=("Segoe UI", 8, "bold"),
+                     bg=C_SURFACE2, fg=color).pack(anchor="w")
+            tk.Label(inn, text=desc,
+                     font=("Segoe UI", 7),
+                     bg=C_SURFACE2, fg=C_TEXT_DIM, justify="left").pack(anchor="w")
+
+        # sklearn badge
+        tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x", pady=(4, 0))
+        badge_row = tk.Frame(parent, bg=C_SURFACE)
+        badge_row.pack(pady=10)
+        active = SKLEARN_AVAILABLE
+        tk.Label(badge_row,
+                 text=f"  {'sklearn: AKTIF' if active else 'sklearn: tidak tersedia'}  ",
+                 font=("Segoe UI", 8, "bold"),
+                 bg=C_SURFACE2,
+                 fg=C_ACCENT2 if active else C_TEXT_DIM,
+                 padx=8, pady=4).pack()
+
+    # ── Board rendering ───────────────────────────────────────────
+    # Pola dua level identik dengan GameScreen._build_grid:
+    #   Lv-1  blok 3×3 — Frame(bg=box_line_color, padx=2, pady=2)
+    #          ditempatkan dengan padx=4, pady=4 → garis TEBAL antar kotak
+    #   Lv-2  canvas sel — grid(padx=1, pady=1) di dalam blok
+    #          → garis TIPIS antar sel; bg blok terlihat sebagai garis tersebut
+
+    def _build_board(self, N, BOX):
+        tc = self._tc()
+        for w in self.grid_frame.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._canvases = {}
+        self._blocks   = {}
+        CELL = self.CELL_PX
+
+        # Lv-1: satu Frame per blok 3×3 — bg = warna garis tebal antar kotak
+        for br in range(BOX):
+            for bc in range(BOX):
+                blk = tk.Frame(
+                    self.grid_frame,
+                    bg=tc["box_line"],
+                    padx=2, pady=2,   # ketebalan garis tipis antar sel di dalam blok
+                )
+                blk.grid(row=br, column=bc, padx=4, pady=4)  # jarak antar blok = garis tebal 3×3
+                self._blocks[(br, bc)] = blk
+
+        # Lv-2: canvas sel di dalam blok
+        for r in range(N):
+            for c in range(N):
+                parent = self._blocks[(r // BOX, c // BOX)]
+                cv = tk.Canvas(
+                    parent,
+                    width=CELL, height=CELL,
+                    bg=tc["empty"][0],   # warna latar sel kosong sesuai tema
+                    highlightthickness=0,
+                )
+                cv.grid(row=r % BOX, column=c % BOX, padx=1, pady=1)
+                self._canvases[(r, c)] = cv
+
+    def _draw_cell(self, r, c, value, state="empty"):
+        cv = self._canvases.get((r, c))
+        if not cv:
+            return
+        CELL = self.CELL_PX
+        cv.delete("all")
+        # Warna sesuai state dan tema aktif (dark / light)
+        tc = self._tc()
+        state_colors = {
+            "fixed":     tc["fixed"],
+            "ai":        tc["ai"],
+            "backtrack": tc["backtrack"],
+            "empty":     tc["empty"],
+        }
+        bg, fg = state_colors.get(state, state_colors["empty"])
+        cv.config(bg=bg)
+        if value:
+            cv.create_text(CELL // 2, CELL // 2,
+                           text=str(value),
+                           font=("Segoe UI", int(CELL * 0.40), "bold"),
+                           fill=fg, anchor="center")
+
+    # ── Solver animation ──────────────────────────────────────────
+    def _new_puzzle(self):
+        if not self._running:
+            return
+        self.status_var.set("⚙  Menghasilkan puzzle baru...")
+        self.moves_var.set("Langkah: 0  |  Backtrack: 0")
+
+        def _gen():
+            try:
+                N, BOX = 9, 3
+                puzzle, _ = generate_puzzle(N, BOX, remove_pct=0.50)
+                hist, _, _ = solve_backtracking_mrv(
+                    [row[:] for row in puzzle], N, BOX)
+                if self._running:
+                    self.after(0, lambda: self._start_animation(
+                        puzzle, hist or [], N, BOX))
+            except Exception:
+                pass
+
+        threading.Thread(target=_gen, daemon=True).start()
+
+    def _start_animation(self, puzzle, hist, N, BOX):
+        if not self._running:
+            return
+        self._build_board(N, BOX)
+        self._board    = [row[:] for row in puzzle]
+        self._puzzle   = [row[:] for row in puzzle]
+        self._hist     = hist
+        self._hist_idx = 0
+        self._backtrack_count = 0
+
+        # Render sel awal
+        for r in range(N):
+            for c in range(N):
+                val = puzzle[r][c]
+                self._draw_cell(r, c, val or None, "fixed" if val else "empty")
+
+        self.status_var.set("🤖  AI sedang berpikir  (MRV Backtracking)...")
+        self._cancel_step()
+        self._schedule_step()
+
+    def _schedule_step(self):
+        if not self._running:
+            return
+        self._step_job = self.after(self.STEP_DELAY, self._do_step)
+
+    def _cancel_step(self):
+        if self._step_job:
+            try:
+                self.after_cancel(self._step_job)
+            except Exception:
+                pass
+            self._step_job = None
+
+    def _do_step(self):
+        if not self._running:
+            return
+        if self._hist_idx >= len(self._hist):
+            # Selesai — mulai hitung mundur dari 3 ke 0 lalu puzzle baru
+            total = len(self._hist)
+            self.moves_var.set(
+                f"Total langkah: {total}  |  Backtrack: {self._backtrack_count}")
+
+            def _countdown(sisa):
+                if not self._running:
+                    return
+                if sisa <= 0:
+                    self._step_job = self.after(0, self._new_puzzle)
+                    return
+                try:
+                    self.status_var.set(
+                        f"✅  Puzzle terpecahkan!  Puzzle baru dalam {sisa} detik...")
+                except Exception:
+                    return
+                self._step_job = self.after(1000, lambda: _countdown(sisa - 1))
+
+            _countdown(3)
+            return
+
+        r, c, val = self._hist[self._hist_idx]
+        self._hist_idx += 1
+
+        if self._puzzle[r][c] != 0:
+            state = "fixed"
+        elif val == 0:
+            state = "backtrack"
+            self._backtrack_count += 1
+        else:
+            state = "ai"
+
+        self._board[r][c] = val
+        self._draw_cell(r, c, val if val else None, state)
+        self.moves_var.set(
+            f"Langkah: {self._hist_idx}  |  Backtrack: {self._backtrack_count}")
+        self._schedule_step()
+
+    # ── Blink label "tap to start" ────────────────────────────────
+    def _blink_start(self):
+        self._blink_tap()
+
+    def _blink_tap(self):
+        if not self._running:
+            return
+        try:
+            cur = self._tap_lbl.cget("fg")
+            nxt = C_TEXT_DIM if cur == C_ACCENT else C_ACCENT
+            self._tap_lbl.config(fg=nxt)
+            self._blink_job = self.after(650, self._blink_tap)
+        except Exception:
+            pass
+
+    # ── Dismiss ───────────────────────────────────────────────────
+    def _on_keypress(self, event=None):
+        """Abaikan tombol Modifier saja; selain itu dismiss."""
+        if event and event.keysym in ("Shift_L", "Shift_R",
+                                      "Control_L", "Control_R",
+                                      "Alt_L", "Alt_R",
+                                      "Super_L", "Super_R",
+                                      "Caps_Lock", "Num_Lock"):
+            return
+        self._dismiss(event)
+
+    def _on_motion(self, event=None):
+        """Dismiss hanya jika mouse bergerak lebih dari 30 px dalam 2 detik."""
+        now = time.time()
+        if now - self._last_motion > 2.0:
+            self._last_motion = now
+            self._dismiss(event)
+
+    def _dismiss(self, event=None):
+        if not self._running:
+            return
+        self._running = False
+        self._cancel_step()
+        if self._blink_job:
+            try:
+                self.after_cancel(self._blink_job)
+            except Exception:
+                pass
+        # Lepas binding global yang sudah dipasang oleh instance ini
+        try:
+            self.unbind_all("<Key>")
+            self.unbind_all("<Button-1>")
+            self.unbind_all("<Motion>")
+        except Exception:
+            pass
+        if callable(self.on_dismiss):
+            self.on_dismiss()
+
+
+# =====================================================
 # TOOLTIP
 # =====================================================
 class Tooltip:
@@ -1484,12 +2082,19 @@ class Tooltip:
 # SCREEN: LOGIN  (fixed — no clipped text, recent users)
 # =====================================================
 class LoginScreen(tk.Frame):
-    def __init__(self, master, on_login, on_browse_players=None):
+    # Detik idle sebelum AttractorScreen diaktifkan
+    _ATTRACTOR_IDLE = AttractorScreen.IDLE_TIMEOUT
+
+    def __init__(self, master, on_login, on_browse_players=None, on_attractor=None):
         super().__init__(master, bg=C_BG)
-        self.on_login = on_login
+        self.on_login          = on_login
         self.on_browse_players = on_browse_players
-        self.data = load_data()
+        self.on_attractor      = on_attractor   # callback saat idle timeout
+        self.data              = load_data()
+        self._last_activity    = time.time()
+        self._attractor_job    = None
         self._build()
+        self._schedule_attractor_check()
 
     def _build(self):
         self.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -1513,7 +2118,12 @@ class LoginScreen(tk.Frame):
             _app = getattr(_app, 'master', None)
         _logo = getattr(_app, '_logo_tk', None) if _app else None
         if _logo:
-            tk.Label(card, image=_logo, bg=C_SURFACE).pack(pady=(20, 0))
+            # Bungkus logo dengan border accent agar terlihat di dark & light mode
+            _logo_wrap = tk.Frame(card, bg=C_ACCENT, padx=3, pady=3)
+            _logo_wrap.pack(pady=(20, 0))
+            _logo_inner = tk.Frame(_logo_wrap, bg=C_SURFACE, padx=6, pady=6)
+            _logo_inner.pack()
+            tk.Label(_logo_inner, image=_logo, bg=C_SURFACE).pack()
         else:
             tk.Label(card, text="⬛", font=("Segoe UI", 44),
                      bg=C_SURFACE, fg=C_ACCENT).pack(pady=(20, 0))
@@ -1538,9 +2148,11 @@ class LoginScreen(tk.Frame):
                               font=("Segoe UI", 13), bg=C_SURFACE2, fg=C_TEXT,
                               insertbackground=C_ACCENT, relief="flat", bd=8)
         self.entry.pack(fill="x")
-        self.entry.bind("<Return>", lambda _: self._login())
+        self.entry.bind("<Return>",   lambda _: self._login())
         self.entry.bind("<FocusIn>",  lambda _: ebox.config(bg=C_ACCENT))
         self.entry.bind("<FocusOut>", lambda _: ebox.config(bg=C_BORDER))
+        # Reset idle counter saat user mengetik
+        self.entry.bind("<Key>", self._reset_activity, add="+")
 
         self.err_lbl = tk.Label(inp, text="", font=FONT_SMALL,
                                 bg=C_SURFACE, fg=C_ERROR)
@@ -1578,8 +2190,38 @@ class LoginScreen(tk.Frame):
                  text=f"👤 {n_p} pemain terdaftar",
                  font=FONT_SMALL, bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(12, 20))
 
-
         self.entry.focus_set()
+
+        # Reset idle timer saat card atau layar diklik
+        self.bind_all("<Button-1>", self._reset_activity, add="+")
+
+    # ── Idle-tracker helpers ──────────────────────────────────────
+    def _reset_activity(self, event=None):
+        """Catat waktu aktivitas terakhir — mencegah attractor muncul."""
+        self._last_activity = time.time()
+
+    def _schedule_attractor_check(self):
+        """Jadwalkan cek idle setiap 5 detik."""
+        if not self.winfo_exists():
+            return
+        elapsed = time.time() - self._last_activity
+        if elapsed >= self._ATTRACTOR_IDLE and callable(self.on_attractor):
+            self._cancel_attractor_check()
+            self.on_attractor()
+            return
+        self._attractor_job = self.after(5000, self._schedule_attractor_check)
+
+    def _cancel_attractor_check(self):
+        if self._attractor_job:
+            try:
+                self.after_cancel(self._attractor_job)
+            except Exception:
+                pass
+            self._attractor_job = None
+
+    def destroy(self):
+        self._cancel_attractor_check()
+        super().destroy()
 
     def _gradient(self, c):
         c.update_idletasks()
@@ -2028,12 +2670,12 @@ class DifficultyScreen(tk.Frame):
         hdr_inner = tk.Frame(hdr, bg=C_SURFACE)
         hdr_inner.pack(pady=18, fill="x")
 
+        # Tombol kembali di-place langsung pada hdr (bukan hdr_inner) agar
+        # tidak masuk ke flow pack dan tidak menggeser judul ke bawah.
+        # Judul selalu benar-benar terpusat di header pada semua skenario.
         if callable(self.on_back):
-            back_row = tk.Frame(hdr_inner, bg=C_SURFACE)
-            back_row.pack(fill="x", padx=28, pady=(0, 6))
-
             back_btn = tk.Button(
-                back_row,
+                hdr,
                 text="←  Kembali ke Pilih Grid",
                 font=("Segoe UI", 9),
                 bg=C_SURFACE,
@@ -2047,15 +2689,14 @@ class DifficultyScreen(tk.Frame):
                 highlightthickness=1,
                 command=self.on_back,
             )
-            back_btn.pack(side="left")
-
-            # Efek hover
+            # y=14: tepat di bawah gradient bar (8px) + sedikit padding
+            back_btn.place(x=28, y=14)
             back_btn.bind("<Enter>", lambda _: back_btn.config(
                 bg=C_SURFACE2, fg=C_TEXT))
             back_btn.bind("<Leave>", lambda _: back_btn.config(
                 bg=C_SURFACE, fg=C_TEXT_DIM))
 
-        # Title row
+        # Title row — terpusat karena hdr_inner.pack() tanpa gangguan back_btn
         N_label = self.grid_size * self.grid_size
         title_row = tk.Frame(hdr_inner, bg=C_SURFACE)
         title_row.pack()
@@ -2617,9 +3258,16 @@ class PerformanceDashboard(tk.Frame):
         self._action_button(btns, "🏆  LEADERBOARD", C_GOLD, C_BG,
                             lambda: LeaderboardWindow(self.winfo_toplevel(), load_data()),
                             side="left", padx=6)
-        self._action_button(btns, "🚪  EXIT", C_ERROR, C_WHITE,
-                            lambda: self.master.event_generate("<<ExitGame>>"),
+        self._action_button(btns, "🚪  LOGOUT", C_ERROR, C_WHITE,
+                            lambda: self.master.event_generate("<<Logout>>"),
                             side="left", padx=(6,0))
+
+        # Tombol Simpan Kartu Skor (baris kedua)
+        btns2 = tk.Frame(pw, bg=C_BG)
+        btns2.pack(fill="x", pady=(4, 0))
+        self._action_button(btns2, "🖼  SIMPAN KARTU SKOR", C_GOLD, "#0D1117",
+                            self._save_score_card_action,
+                            side="left", padx=0)
 
     # ─────────────────────────────────────────────────────────────
     # HERO CARDS
@@ -3135,8 +3783,44 @@ class PerformanceDashboard(tk.Frame):
     def _start_recommendation(self):
         self.controller._start_recommended_grid(self.recommended_grid, self.ml.recommend_difficulty())
 
-    def _exit(self):
-        self.controller._exit()
+    def _logout_from_dashboard(self):
+        self.master.event_generate("<<Logout>>")
+
+    def _save_score_card_action(self):
+        """Ambil data dari session + ML + achievement, generate PNG."""
+        s          = self.session
+        stats      = self.ml.get_summary()
+        p_type     = stats.get("player_type", "Pemain")
+        type_info  = stats.get("type_info", {})
+        type_color = type_info.get("color", "#58A6FF")
+        ai_msg     = self.recommended_reason or "Terus berlatih dan raih skor terbaik!"
+
+        # Ambil riwayat sesi dan achievement dari JSON
+        _data         = load_data()
+        _pdata        = _data["players"].get(self.username, {})
+        all_sessions  = _pdata.get("sessions", [])
+        achievements  = _pdata.get("achievements", [])
+
+        path = _save_score_card(
+            username      = self.username,
+            session       = s,
+            player_type   = p_type,
+            type_color    = type_color,
+            ai_message    = ai_msg,
+            all_sessions  = all_sessions,
+            ml_summary    = stats,
+            achievements  = achievements,
+            parent_widget = self,
+        )
+        if path:
+            messagebox.showinfo(
+                "🖼 Kartu Skor Tersimpan",
+                f"File disimpan ke:\n{path}",
+                parent=self)
+        else:
+            messagebox.showerror(
+                "Gagal", "Gagal menyimpan kartu skor.\nPastikan Pillow terinstall.",
+                parent=self)
 
     def _bind_mousewheel(self):
         if self._mousewheel_bound:
@@ -3193,6 +3877,107 @@ class PerformanceDashboard(tk.Frame):
         bg.after(250, grow)
         tk.Label(row, text=f"{val:.0f}%", font=("Segoe UI", 9, "bold"),
                  bg=C_BG, fg=color, width=5).pack(side="right")
+
+# =====================================================
+# TUTORIAL OVERLAY — Pemain Baru
+# =====================================================
+# Muncul otomatis pada game PERTAMA setiap pemain baru.
+# Tiga langkah dasar cara bermain Sudoku ditampilkan dalam
+# satu overlay card. Setelah ditutup, flag 'tutorial_done'
+# disimpan ke sudoku_data.json sehingga tidak muncul lagi.
+# =====================================================
+class TutorialOverlay(tk.Frame):
+    """
+    Overlay tutorial 3 langkah untuk pemain baru.
+    Dipanggil dari GameScreen._show_tutorial() setelah puzzle pertama terbentuk.
+    """
+    def __init__(self, master, n, on_close):
+        # master = GameScreen (tk.Frame yang sudah di-place relwidth=1 relheight=1)
+        # Warna overlay: gelap di dark mode, abu terang di light mode
+        overlay_bg = "#080B10" if _CURRENT_THEME_NAME == "dark" else "#BCC8DC"
+        super().__init__(master, bg=overlay_bg)
+        self.on_close = on_close
+        self.n = n
+        # Tutup seluruh permukaan GameScreen
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._build()
+        self.lift()
+
+    def _build(self):
+        # Warna teks badge: gelap di atas warna aksen vivid
+        badge_fg = C_BG   # dark mode: #0D1117 — light mode: #F0F4FA, keduanya kontras
+        # ── Card utama (ditengah overlay) ──────────────────────────────
+        card = tk.Frame(self, bg=C_SURFACE,
+                        highlightbackground=C_ACCENT, highlightthickness=2)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=600, height=420)
+
+        # Judul
+        tk.Label(card,
+                 text="🎮   Selamat Datang di Sudoku AI!",
+                 font=("Segoe UI", 17, "bold"),
+                 bg=C_SURFACE, fg=C_TEXT).pack(pady=(22, 2))
+        tk.Label(card,
+                 text="Ikuti 3 langkah sederhana berikut untuk mulai bermain",
+                 font=("Segoe UI", 10),
+                 bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(0, 16))
+
+        # ── Tiga langkah berjajar ──────────────────────────────────────
+        row = tk.Frame(card, bg=C_SURFACE)
+        row.pack(fill="x", padx=20, pady=(0, 16))
+
+        steps = [
+            ("1", "📍", "Klik Sel Kosong",
+             "Sentuh salah satu kotak kosong di papan permainan",
+             C_ACCENT),
+            ("2", "🔢", f"Masukkan Angka 1–{self.n}",
+             "Ketik angka yang menurutmu tepat mengisi sel tersebut",
+             C_ACCENT2),
+            ("3", "📏", "Ingat Aturannya",
+             "Tiap baris, kolom, dan kotak kecil harus berisi angka yang berbeda",
+             C_WARN),
+        ]
+
+        for num, emoji, title, desc, color in steps:
+            col = tk.Frame(row, bg=C_SURFACE2,
+                           highlightbackground=color, highlightthickness=1)
+            col.pack(side="left", fill="both", expand=True, padx=5)
+
+            # Badge nomor langkah
+            badge_wrap = tk.Frame(col, bg=C_SURFACE2)
+            badge_wrap.pack(pady=(14, 0))
+            badge = tk.Frame(badge_wrap, bg=color, width=26, height=26)
+            badge.pack()
+            badge.pack_propagate(False)
+            tk.Label(badge, text=num, font=("Segoe UI", 11, "bold"),
+                     bg=color, fg=badge_fg).pack(expand=True)
+
+            tk.Label(col, text=emoji, font=("Segoe UI", 24),
+                     bg=C_SURFACE2).pack(pady=(6, 2))
+            tk.Label(col, text=title, font=("Segoe UI", 9, "bold"),
+                     bg=C_SURFACE2, fg=C_TEXT,
+                     wraplength=156, justify="center").pack(padx=8)
+            tk.Label(col, text=desc, font=("Segoe UI", 8),
+                     bg=C_SURFACE2, fg=C_TEXT_DIM,
+                     wraplength=156, justify="center").pack(padx=8, pady=(4, 14))
+
+        # ── Tombol tutup ───────────────────────────────────────────────
+        tk.Button(card,
+                  text="✓   Mengerti, mulai!",
+                  font=("Segoe UI", 12, "bold"),
+                  bg=C_ACCENT, fg=badge_fg,
+                  activebackground=C_ACCENT2, activeforeground=badge_fg,
+                  relief="flat", cursor="hand2", pady=11,
+                  command=self._close
+                  ).pack(fill="x", padx=20, pady=(0, 20))
+
+    def _close(self):
+        if callable(self.on_close):
+            self.on_close()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
 
 # =====================================================
 # MAIN GAME SCREEN
@@ -3270,6 +4055,22 @@ class GameScreen(tk.Frame):
         self.ml  = PlayerMLEngine()
         self.ml.sessions = sessions
 
+        # Tutorial pemain baru — hanya tampil jika pemain benar-benar baru:
+        # belum punya sesi SAMA SEKALI dan belum pernah menyelesaikan tutorial.
+        # Pemain lama (sudah ada sesi) tidak mendapat tutorial meski flag absen,
+        # agar tidak mengganggu alur pameran saat ganti pemain.
+        player_data    = data.get("players", {}).get(username, {})
+        has_sessions   = bool(player_data.get("sessions"))
+        tutorial_done  = player_data.get("tutorial_done", False)
+        self._tutorial_pending = (not has_sessions) and (not tutorial_done)
+
+        # ML Transparency Panel state
+        self._ml_panel_visible  = False   # toggle on/off
+        self._ml_panel_frame    = None    # overlay Frame widget
+        self._ml_panel_job      = None    # after() handle untuk refresh loop
+        self._ml_last_refresh   = 0.0    # timestamp refresh terakhir
+        self._ml_refresh_busy   = False   # guard agar tidak double-refresh
+
         self._build()
         if resume_state:
             self._restore_state(resume_state)
@@ -3286,8 +4087,9 @@ class GameScreen(tk.Frame):
         sb.pack_propagate(False)
 
         tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x")
-        brand = tk.Frame(sb, bg=C_SIDEBAR, pady=14)
+        brand = tk.Frame(sb, bg=C_SIDEBAR, pady=4)
         brand.pack(fill="x")
+
         tk.Label(brand, text="⬛ SUDOKU AI",
                  font=("Segoe UI", 13, "bold"), bg=C_SIDEBAR, fg=C_TEXT).pack()
         tk.Label(brand, text=f"@{self.username}  |  {self.N}×{self.N}",
@@ -3295,20 +4097,20 @@ class GameScreen(tk.Frame):
         tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x")
 
         # Difficulty buttons
-        df = tk.Frame(sb, bg=C_SIDEBAR, pady=10)
+        df = tk.Frame(sb, bg=C_SIDEBAR, pady=3)
         df.pack(fill="x", padx=10)
         tk.Label(df, text="DIFFICULTY", font=("Segoe UI", 8, "bold"),
                  bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w")
         for d in ["Easy", "Normal", "Hard"]:
             b = tk.Button(df, text=get_diff_theme(d)["emoji"] + "  " + d,
-                          font=FONT_BTN_SM, relief="flat", cursor="hand2", pady=4,
+                          font=FONT_BTN_SM, relief="flat", cursor="hand2", pady=2,
                           command=lambda dd=d: self._change_difficulty(dd))
             b.pack(fill="x", pady=1)
             b.config(bg=get_diff_theme(d)["accent"] if d == self.difficulty else C_SURFACE2,
                      fg=C_BG if d == self.difficulty else C_TEXT_DIM)
             setattr(self, f"_dbtn_{d}", b)
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=4)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=1)
 
         # Controls
         cf = tk.Frame(sb, bg=C_SIDEBAR)
@@ -3319,8 +4121,9 @@ class GameScreen(tk.Frame):
         self._sb_btn(cf, "💡  Hint",         "#E67E22", self._give_hint)
         self._sb_btn(cf, "🏆  Leaderboard",  C_GOLD,
                      lambda: LeaderboardWindow(self.master, load_data()))
+        self._sb_btn(cf, "◀  Pilih Grid",   C_ACCENT,  self._back_to_grid)
 
-        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(6, 3))
+        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(3, 2))
 
         # Ganti Pemain — lebih menonjol dengan bg berwarna redup
         btn_gp = tk.Button(cf,
@@ -3328,23 +4131,24 @@ class GameScreen(tk.Frame):
             font=FONT_BTN_SM,
             bg=C_SIDEBAR_PURPLE_BG, fg=C_PURPLE,
             activebackground=C_PURPLE, activeforeground=C_BG,
-            relief="flat", cursor="hand2", pady=6, anchor="w",
+            relief="flat", cursor="hand2", pady=4, anchor="w",
             command=self._change_player)
         btn_gp.pack(fill="x", pady=1)
 
-        # Logout — background merah redup agar beda dari Ganti Pemain
+        # Logout / Reset Sesi — satu tombol, langsung kembali ke login
         btn_lo = tk.Button(cf,
-            text="🚪  Logout",
+            text="🚪  Logout / Reset Sesi",
             font=FONT_BTN_SM,
             bg=C_SIDEBAR_RED_BG, fg=C_ERROR,
             activebackground=C_ERROR, activeforeground=C_BG,
-            relief="flat", cursor="hand2", pady=6, anchor="w",
-            command=self._logout)
-        btn_lo.pack(fill="x", pady=1)
+            relief="flat", cursor="hand2", pady=4, anchor="w",
+            command=self._kiosk_reset)
+        btn_lo.pack(fill="x", pady=(1, 2))
+        Tooltip(btn_lo, "Kembali ke halaman login — cocok untuk pergantian pemain di pameran (F5)")
 
-        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(3, 0))
+        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(2, 0))
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=4)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
 
         # Draft Mode Panel (only shown in Hard)
         self.draft_panel = tk.Frame(sb, bg=C_SIDEBAR)
@@ -3352,7 +4156,7 @@ class GameScreen(tk.Frame):
         if self.difficulty == "Hard":
             self._build_draft_panel()
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=4)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
 
         # AI Solver
         af = tk.Frame(sb, bg=C_SIDEBAR)
@@ -3362,7 +4166,20 @@ class GameScreen(tk.Frame):
         btn_bt = self._sb_btn(af, "🤖  Backtracking MRV", "#1ABC9C", self._run_backtrack)
         Tooltip(btn_bt, "Backtracking + MRV heuristic: solver optimal")
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=4)
+        # ML Transparency toggle — tombol kecil di bawah AI Solver
+        self._ml_toggle_btn = tk.Button(
+            af,
+            text="🔬  ML Panel  [I]",
+            font=("Segoe UI", 8, "bold"),
+            bg=C_SURFACE2, fg=C_PURPLE,
+            activebackground=C_PURPLE, activeforeground=C_BG,
+            relief="flat", cursor="hand2", pady=3, anchor="w",
+            command=self._toggle_ml_panel,
+        )
+        self._ml_toggle_btn.pack(fill="x", pady=1)
+        Tooltip(self._ml_toggle_btn, "Toggle ML Transparency Panel (I)")
+
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
 
         # Session stats
         sf = tk.Frame(sb, bg=C_SIDEBAR)
@@ -3375,14 +4192,14 @@ class GameScreen(tk.Frame):
         self.lbl_auto   = self._stat_row(sf, "Auto ⚡", "0", col="#BC8CFF")
 
         # ── Behaviour analysis rows ────────────────────────────────
-        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(4,2))
+        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(3,1))
         self.lbl_nearmiss = self._stat_row(sf, "Hampir Benar", "0",
                                            col="#F0883E")
         self.lbl_guessing = self._stat_row(sf, "Asal Tebak",   "0",
                                            col=C_ERROR)
 
         # ── Hearts bar ─────────────────────────────────────────────
-        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(6,4))
+        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(2,1))
         heart_lbl_row = tk.Frame(sf, bg=C_SIDEBAR)
         heart_lbl_row.pack(fill="x")
         tk.Label(heart_lbl_row, text="HATI (HINT)",
@@ -3395,11 +4212,11 @@ class GameScreen(tk.Frame):
         self.lbl_hearts_count.pack(side="right")
 
         self.heart_row = tk.Frame(sf, bg=C_SIDEBAR)
-        self.heart_row.pack(fill="x", pady=(3,0))
+        self.heart_row.pack(fill="x", pady=(1,0))
         self.heart_labels = []
         for _ in range(self.max_hearts):
             lbl = tk.Label(self.heart_row, text="♥",
-                           font=("Segoe UI", 11),
+                           font=("Segoe UI", 10),
                            bg=C_SIDEBAR, fg=C_ERROR)
             lbl.pack(side="left")
             self.heart_labels.append(lbl)
@@ -3407,7 +4224,7 @@ class GameScreen(tk.Frame):
 
         # Hint action placed directly under the heart icons
         hint_wrap = tk.Frame(sf, bg=C_SIDEBAR)
-        hint_wrap.pack(fill="x", pady=(6, 2))
+        hint_wrap.pack(fill="x", pady=(2, 0))
 
         hint_btn = tk.Button(
             hint_wrap,
@@ -3419,7 +4236,7 @@ class GameScreen(tk.Frame):
             activeforeground="#FFF7ED",
             relief="flat",
             cursor="hand2",
-            pady=8,
+            pady=6,
             padx=12,
             anchor="center",
             justify="center",
@@ -3430,7 +4247,7 @@ class GameScreen(tk.Frame):
 
         tk.Label(sb, text="Esc = Toggle Fullscreen",
                  font=("Segoe UI", 8, "italic"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(side="bottom", pady=8)
+                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(side="bottom", pady=4)
 
         # ═══ MAIN AREA ═══
         main = tk.Frame(self, bg=C_BG)
@@ -3491,14 +4308,14 @@ class GameScreen(tk.Frame):
         b = tk.Button(parent, text=text, font=FONT_BTN_SM,
                       bg=C_SURFACE2, fg=color,
                       activebackground=color, activeforeground=C_BG,
-                      relief="flat", cursor="hand2", pady=5, anchor="w",
+                      relief="flat", cursor="hand2", pady=3, anchor="w",
                       command=cmd)
         b.pack(fill="x", pady=1)
         return b
 
     def _stat_row(self, parent, label, val, col=None):
         r = tk.Frame(parent, bg=C_SIDEBAR)
-        r.pack(fill="x", pady=1)
+        r.pack(fill="x", pady=0)
         tk.Label(r, text=label, font=("Segoe UI", 9),
                  bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(side="left")
         lbl = tk.Label(r, text=val, font=("Segoe UI", 9, "bold"),
@@ -3530,13 +4347,13 @@ class GameScreen(tk.Frame):
             font=FONT_BTN_SM,
             bg=C_SURFACE2, fg="#BC8CFF",
             activebackground="#4A2060", activeforeground="#E8AAFF",
-            relief="flat", cursor="hand2", pady=6,
+            relief="flat", cursor="hand2", pady=4,
             command=self._toggle_draft_mode)
-        self.draft_toggle_btn.pack(fill="x", pady=(4, 2))
+        self.draft_toggle_btn.pack(fill="x", pady=(2, 1))
 
         # Auto-kandidat & clear row
         action_row = tk.Frame(self.draft_panel, bg=C_SIDEBAR)
-        action_row.pack(fill="x", pady=2)
+        action_row.pack(fill="x", pady=0)
 
         self.auto_cand_btn = tk.Button(
             action_row,
@@ -3544,7 +4361,7 @@ class GameScreen(tk.Frame):
             font=("Segoe UI", 8, "bold"),
             bg=C_SURFACE2, fg=C_ACCENT,
             activebackground=C_ACCENT, activeforeground=C_BG,
-            relief="flat", cursor="hand2", pady=5,
+            relief="flat", cursor="hand2", pady=3,
             command=self._auto_fill_candidates)
         self.auto_cand_btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
 
@@ -3554,17 +4371,17 @@ class GameScreen(tk.Frame):
             font=("Segoe UI", 8, "bold"),
             bg=C_NUMPAD_DEL_BG, fg=C_ERROR,
             activebackground=C_NUMPAD_DEL_HOV, activeforeground=C_BG,
-            relief="flat", cursor="hand2", pady=5,
+            relief="flat", cursor="hand2", pady=3,
             command=self._clear_all_drafts)
         self.clear_draft_btn.pack(side="right", fill="x", expand=True, padx=(2, 0))
 
-        # Tips
+        # Tips — satu baris agar lebih compact
         tip = tk.Label(self.draft_panel,
-                       text="Klik angka = toggle kandidat\n⚡ Auto = isi semua kandidat",
-                       font=("Segoe UI", 8),
+                       text="Klik angka = toggle  |  ⚡ Auto = isi semua",
+                       font=("Segoe UI", 7),
                        bg=C_SIDEBAR, fg=C_TEXT_DIM,
                        justify="left")
-        tip.pack(anchor="w", pady=(4, 0))
+        tip.pack(anchor="w", pady=(1, 0))
 
         # Confirm button placeholder (kept as None — not used in multi-candidate mode)
         self.confirm_btn = None
@@ -3582,8 +4399,8 @@ class GameScreen(tk.Frame):
         for br in range(self.BOX):
             for bc in range(self.BOX):
                 blk = tk.Frame(self.grid_container,
-                               bg=self.theme["grid_line"], padx=1, pady=1)
-                blk.grid(row=br, column=bc, padx=2, pady=2)
+                               bg=self.theme["grid_line"], padx=2, pady=2)
+                blk.grid(row=br, column=bc, padx=3, pady=3)
                 self.blocks[(br, bc)] = blk
 
         for r in range(self.N):
@@ -3901,6 +4718,15 @@ class GameScreen(tk.Frame):
         self.update_idletasks()
         self._draw_board()
 
+        # Tutorial overlay — hanya muncul sekali untuk pemain baru.
+        # _tutorial_pending di-set True di __init__ jika player belum punya flag
+        # tutorial_done. Langsung reset ke False di sini (before after()) agar
+        # panggilan _start_new_game() berikutnya (new game / ganti difficulty)
+        # tidak memunculkan tutorial lagi.
+        if getattr(self, "_tutorial_pending", False):
+            self._tutorial_pending = False
+            self.after(500, self._show_tutorial)
+
     def _new_game(self):
         self._stop_timer()
         self._start_new_game()
@@ -4009,6 +4835,36 @@ class GameScreen(tk.Frame):
         self._stop_timer()
         self.master.event_generate("<<Logout>>")
 
+    def _kiosk_reset(self):
+        """Kiosk reset — langsung ke login tanpa dialog (F5 / Ctrl+Shift+R)."""
+        self._stop_timer()
+        self.master.event_generate("<<Logout>>")
+
+    def _back_to_grid(self):
+        self._stop_timer()
+        self.master.event_generate("<<BackToGrid>>")
+
+    # ── Tutorial overlay (pemain baru) ────────────────────────────────
+    def _show_tutorial(self):
+        """Tampilkan tutorial overlay untuk pemain baru."""
+        try:
+            TutorialOverlay(self, n=self.N, on_close=self._on_tutorial_done)
+        except Exception:
+            pass
+
+    def _on_tutorial_done(self):
+        """Simpan flag tutorial_done setelah pemain menutup tutorial."""
+        try:
+            data = load_data()
+            if self.username not in data.get("players", {}):
+                data["players"][self.username] = {
+                    "sessions": [], "created_at": time.time()
+                }
+            data["players"][self.username]["tutorial_done"] = True
+            save_data(data)
+        except Exception:
+            pass
+
     # ── Event Handlers ────────────────────────────────
     def _on_click(self, r, c):
         self.selected = (r, c)
@@ -4018,6 +4874,11 @@ class GameScreen(tk.Frame):
 
     def _on_key(self, event):
         if self.game_over: return
+
+        # ML Transparency Panel toggle
+        if event.char.lower() == "i":
+            self._toggle_ml_panel()
+            return
 
         # Draft mode toggle
         if event.char.lower() == "d" and self.difficulty == "Hard":
@@ -4081,6 +4942,7 @@ class GameScreen(tk.Frame):
 
         if not num_valid:
             self.error_count += 1
+            _play_sfx(_SFX_ERROR)   # buzz error
             now  = time.time()
             prev = self.cell_errors.get((r, c), 0)
             last = self.cell_last_time.get((r, c), 0)
@@ -4102,6 +4964,7 @@ class GameScreen(tk.Frame):
             # Correct input: clear per-cell error state for this cell
             self.cell_errors.pop((r, c), None)
             self.cell_last_time.pop((r, c), None)
+            _play_sfx(_SFX_CORRECT)   # klik ringan benar
 
         # Clear draft on this cell and auto-eliminate from neighbours
         self.draft_board.pop((r, c), None)
@@ -4378,6 +5241,7 @@ class GameScreen(tk.Frame):
         if not self._is_board_valid_and_complete(): return
         self.game_over = True
         self._stop_timer()
+        _play_sfx(_SFX_WIN)   # fanfare kemenangan
         self.status_var.set("🎉 SELAMAT! Puzzle selesai!")
         self.timer_lbl.config(fg=C_ACCENT2)
         self._flash_win()
@@ -4512,6 +5376,9 @@ class GameScreen(tk.Frame):
                                   fg="#F0883E" if self.near_miss_count else C_TEXT)
         self.lbl_guessing.config(text=str(self.guessing_count),
                                   fg=C_ERROR if self.guessing_count else C_TEXT)
+        # Refresh ML panel jika sedang tampil dan sudah cukup waktu sejak refresh terakhir
+        if self._ml_panel_visible and (time.time() - self._ml_last_refresh > 2.0):
+            self._schedule_ml_refresh()
 
     def _update_hearts_ui(self):
         """Refresh heart icons: filled red = remaining, dim = spent."""
@@ -4636,6 +5503,565 @@ class GameScreen(tk.Frame):
         hist, exp, t = solve_backtracking_mrv(self.puzzle, self.N, self.BOX)
         self._animate(hist,
                       f"Backtracking MRV — {exp} nodes | {t*1000:.1f}ms")
+
+    # =====================================================================
+    # ML TRANSPARENCY PANEL
+    # =====================================================================
+    # Panel overlay yang menampilkan output ML secara real-time:
+    #   • KNN Player Type + Confidence
+    #   • HintTimer RFR threshold adaptif
+    #   • RFR predicted next score
+    #   • IsolationForest anomaly status
+    #   • MultiOutput skill bars (speed/accuracy/consistency/independence)
+    # Toggle: tombol "🔬 ML Panel [I]" di sidebar atau tekan I saat game.
+    # Refresh: setiap 8 detik atau setelah setiap move (min 5 detik jeda).
+    # =====================================================================
+
+    # ── Snapshot state sesi berjalan ──────────────────────────────────────
+    def _build_live_session(self):
+        """Buat dict sesi saat ini dari state game yang sedang berjalan."""
+        elapsed = (time.time() - self.start_time
+                   if self.timer_running else self.elapsed)
+        moves = max(self.move_count, 1)
+        ec    = max(self.empty_cells, 1)
+        return {
+            "username":    self.username,
+            "difficulty":  self.difficulty,
+            "grid_size":   self.grid_size,
+            "total_time":  elapsed,
+            "moves":       self.move_count,
+            "errors":      self.error_count,
+            "hints_used":  self.hints_used,
+            "auto_used":   self.auto_used_count,
+            "completed":   False,
+            "timestamp":   time.time(),
+            "empty_cells": ec,
+            "time_per_cell": elapsed / ec,
+            "near_miss":   self.near_miss_count,
+            "guessing":    self.guessing_count,
+            "score":       0,
+        }
+
+    def _remaining_pct(self):
+        """Hitung persentase sel yang masih kosong dari total empty_cells awal."""
+        remaining = sum(
+            1 for rr in range(self.N) for cc in range(self.N)
+            if self.current_board[rr][cc] == 0
+        )
+        return remaining / max(self.empty_cells, 1)
+
+    # ── Toggle visibilitas panel ──────────────────────────────────────────
+    def _toggle_ml_panel(self):
+        if self._ml_panel_visible:
+            self._hide_ml_panel()
+        else:
+            self._show_ml_panel()
+
+    def _show_ml_panel(self):
+        self._ml_panel_visible = True
+        try:
+            self._ml_toggle_btn.config(
+                bg=C_PURPLE, fg=C_BG,
+                activebackground=C_SURFACE2, activeforeground=C_PURPLE,
+            )
+        except Exception:
+            pass
+        self._build_ml_transparency_panel()
+        # Refresh pertama dijadwalkan oleh _build_ml_transparency_panel via after(120,...)
+
+    def _hide_ml_panel(self):
+        self._ml_panel_visible = False
+        try:
+            self._ml_toggle_btn.config(
+                bg=C_SURFACE2, fg=C_PURPLE,
+                activebackground=C_PURPLE, activeforeground=C_BG,
+            )
+        except Exception:
+            pass
+        # Batalkan refresh loop
+        if self._ml_panel_job:
+            try:
+                self.after_cancel(self._ml_panel_job)
+            except Exception:
+                pass
+            self._ml_panel_job = None
+        # Hancurkan overlay
+        if self._ml_panel_frame and self._ml_panel_frame.winfo_exists():
+            try:
+                self._ml_panel_frame.destroy()
+            except Exception:
+                pass
+        self._ml_panel_frame = None
+
+    # ── Bangun overlay panel (widget tetap, data diisi kemudian) ──────────
+    def _build_ml_transparency_panel(self):
+        # Hapus panel lama jika ada
+        if self._ml_panel_frame and self._ml_panel_frame.winfo_exists():
+            try:
+                self._ml_panel_frame.destroy()
+            except Exception:
+                pass
+
+        is_light = (_CURRENT_THEME_NAME == "light")
+        bg_panel  = C_SURFACE
+        bg_card   = C_SURFACE2
+        sep_col   = C_BORDER
+
+        W_PANEL = 292   # lebar panel dalam pixel
+
+        # Hitung posisi di kanan board SEBELUM frame dibuat.
+        # grid_container sudah ter-render, koordinatnya sudah akurat.
+        self.update_idletasks()
+        _px, _py = 246, 130   # fallback jika kalkulasi gagal
+        try:
+            gc    = self.grid_container
+            gc_rx = gc.winfo_rootx() - self.winfo_rootx()
+            gc_w  = gc.winfo_width()
+            gc_ry = gc.winfo_rooty() - self.winfo_rooty()
+            _px   = gc_rx + gc_w + 14
+            _py   = max(60, gc_ry)
+            sw    = self.winfo_width()
+            if _px + W_PANEL + 24 > sw - 6:
+                _px = sw - W_PANEL - 30
+        except Exception:
+            pass
+
+        # Outer frame langsung ditempatkan di posisi akhir yang benar
+        pnl = tk.Frame(
+            self,
+            bg=bg_panel,
+            highlightbackground=C_ACCENT,
+            highlightthickness=1,
+        )
+        pnl.place(x=_px, y=_py, anchor="nw")
+        self._ml_panel_frame = pnl
+
+        # ── Header ────────────────────────────────────────────────
+        hdr = tk.Frame(pnl, bg=C_PURPLE, width=W_PANEL, cursor="fleur")
+        hdr.pack(fill="x")
+        # pack_propagate(False) dihapus -- menyebabkan header 0px tinggi
+        hdr_inner = tk.Frame(hdr, bg=C_PURPLE)
+        hdr_inner.pack(fill="x", padx=10, pady=6)
+        tk.Label(hdr_inner, text="🔬  ML TRANSPARENCY",
+                 font=("Segoe UI", 9, "bold"),
+                 bg=C_PURPLE, fg=C_BG).pack(side="left")
+        close_btn = tk.Button(
+            hdr_inner, text="✕",
+            font=("Segoe UI", 9, "bold"),
+            bg=C_PURPLE, fg=C_BG,
+            activebackground="#9A6FDF", activeforeground=C_BG,
+            relief="flat", cursor="hand2",
+            command=self._hide_ml_panel,
+        )
+        close_btn.pack(side="right")
+        # Drag-to-move: tahan header lalu seret untuk memindahkan panel
+        self._ml_drag_x = 0
+        self._ml_drag_y = 0
+        def _drag_start(e):
+            self._ml_drag_x = e.x_root - pnl.winfo_x()
+            self._ml_drag_y = e.y_root - pnl.winfo_y()
+        def _drag_move(e):
+            nx = e.x_root - self._ml_drag_x
+            ny = e.y_root - self._ml_drag_y
+            pnl.place(x=nx, y=ny, anchor="nw")
+        hdr.bind("<ButtonPress-1>", _drag_start)
+        hdr.bind("<B1-Motion>", _drag_move)
+        hdr_inner.bind("<ButtonPress-1>", _drag_start)
+        hdr_inner.bind("<B1-Motion>", _drag_move)
+        self._ml_refresh_btn = tk.Button(
+            hdr_inner, text="🔄",
+            font=("Segoe UI", 9),
+            bg=C_PURPLE, fg=C_BG,
+            activebackground="#9A6FDF", activeforeground=C_BG,
+            relief="flat", cursor="hand2",
+            command=self._schedule_ml_refresh,
+        )
+        self._ml_refresh_btn.pack(side="right", padx=(0, 4))
+        Tooltip(self._ml_refresh_btn, "Refresh data ML sekarang")
+
+        # Body scrollable agar panel tidak melebihi tinggi layar
+        body_outer = tk.Frame(pnl, bg=bg_panel, width=W_PANEL)
+        body_outer.pack(fill="x", padx=0, pady=0)
+        sc_body = tk.Canvas(body_outer, bg=bg_panel, highlightthickness=0, width=W_PANEL)
+        sc_body.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(sc_body, bg=bg_panel, width=W_PANEL)
+        sc_body.create_window((0, 0), window=body, anchor="nw")
+        def _on_body_configure(e=None):
+            sc_body.configure(scrollregion=sc_body.bbox("all"))
+            h = min(body.winfo_reqheight(), 400)
+            sc_body.configure(height=h)
+        body.bind("<Configure>", _on_body_configure)
+        sc_body.bind("<MouseWheel>", lambda e: sc_body.yview_scroll(int(-1*(e.delta/120)), "units"))
+        body.bind("<MouseWheel>", lambda e: sc_body.yview_scroll(int(-1*(e.delta/120)), "units"))
+        body_inner_pad = tk.Frame(body, bg=bg_panel)
+        body_inner_pad.pack(fill="x", padx=8, pady=6)
+        body = body_inner_pad  # redirect body ke inner frame
+
+        def _sep():
+            tk.Frame(body, height=1, bg=sep_col).pack(fill="x", pady=(4, 2))
+
+        def _section_title(icon, title, color=C_TEXT_DIM):
+            r = tk.Frame(body, bg=bg_panel)
+            r.pack(fill="x", pady=(4, 1))
+            tk.Label(r, text=f"{icon}  {title}",
+                     font=("Segoe UI", 8, "bold"),
+                     bg=bg_panel, fg=color).pack(side="left")
+
+        # ── 1. KNN Player Type ─────────────────────────────────────
+        _section_title("🎯", "KNN  PLAYER TYPE", C_ACCENT)
+        knn_card = tk.Frame(body, bg=bg_card,
+                            highlightbackground=C_ACCENT, highlightthickness=1)
+        knn_card.pack(fill="x", pady=2)
+        knn_inner = tk.Frame(knn_card, bg=bg_card)
+        knn_inner.pack(fill="x", padx=8, pady=5)
+
+        knn_row = tk.Frame(knn_inner, bg=bg_card)
+        knn_row.pack(fill="x")
+        self._ml_knn_emoji  = tk.Label(knn_row, text="?",
+                                        font=("Segoe UI", 14),
+                                        bg=bg_card, fg=C_ACCENT)
+        self._ml_knn_emoji.pack(side="left")
+        self._ml_knn_type   = tk.Label(knn_row, text="Loading…",
+                                        font=("Segoe UI", 10, "bold"),
+                                        bg=bg_card, fg=C_TEXT)
+        self._ml_knn_type.pack(side="left", padx=(4, 0))
+        self._ml_knn_conf   = tk.Label(knn_row, text="",
+                                        font=("Segoe UI", 8),
+                                        bg=bg_card, fg=C_TEXT_DIM)
+        self._ml_knn_conf.pack(side="right")
+
+        # Confidence bar
+        conf_track = tk.Frame(knn_inner, bg=C_BORDER, height=6)
+        conf_track.pack(fill="x", pady=(4, 0))
+        self._ml_knn_bar = tk.Frame(conf_track, bg=C_ACCENT, height=6, width=4)
+        self._ml_knn_bar.place(x=0, y=0)
+
+        _sep()
+        # ── 2. Hint Timer Threshold ────────────────────────────────
+        _section_title("⏱", "HINT TIMER  (RFR)", C_WARN)
+        hint_card = tk.Frame(body, bg=bg_card,
+                             highlightbackground=C_WARN, highlightthickness=1)
+        hint_card.pack(fill="x", pady=2)
+        hint_inner = tk.Frame(hint_card, bg=bg_card)
+        hint_inner.pack(fill="x", padx=8, pady=5)
+        thresh_row = tk.Frame(hint_inner, bg=bg_card)
+        thresh_row.pack(fill="x")
+        tk.Label(thresh_row, text="Threshold:",
+                 font=("Segoe UI", 8), bg=bg_card, fg=C_TEXT_DIM).pack(side="left")
+        self._ml_hint_thresh = tk.Label(thresh_row, text="— det",
+                                         font=("Segoe UI", 10, "bold"),
+                                         bg=bg_card, fg=C_WARN)
+        self._ml_hint_thresh.pack(side="left", padx=(4, 0))
+        idle_row = tk.Frame(hint_inner, bg=bg_card)
+        idle_row.pack(fill="x", pady=(2, 0))
+        tk.Label(idle_row, text="Idle saat ini:",
+                 font=("Segoe UI", 8), bg=bg_card, fg=C_TEXT_DIM).pack(side="left")
+        self._ml_hint_idle = tk.Label(idle_row, text="— det",
+                                       font=("Segoe UI", 9, "bold"),
+                                       bg=bg_card, fg=C_TEXT)
+        self._ml_hint_idle.pack(side="left", padx=(4, 0))
+
+        _sep()
+        # ── 3. RFR Predicted Next Score ────────────────────────────
+        _section_title("📈", "PREDIKSI SKOR  (RFR)", C_ACCENT2)
+        rfr_card = tk.Frame(body, bg=bg_card,
+                            highlightbackground=C_ACCENT2, highlightthickness=1)
+        rfr_card.pack(fill="x", pady=2)
+        rfr_inner = tk.Frame(rfr_card, bg=bg_card)
+        rfr_inner.pack(fill="x", padx=8, pady=5)
+        rfr_row = tk.Frame(rfr_inner, bg=bg_card)
+        rfr_row.pack(fill="x")
+        tk.Label(rfr_row, text="Sesi berikutnya:",
+                 font=("Segoe UI", 8), bg=bg_card, fg=C_TEXT_DIM).pack(side="left")
+        self._ml_rfr_score = tk.Label(rfr_row, text="—",
+                                       font=("Segoe UI", 11, "bold"),
+                                       bg=bg_card, fg=C_ACCENT2)
+        self._ml_rfr_score.pack(side="right")
+
+        _sep()
+        # ── 4. Isolation Forest Anomaly ────────────────────────────
+        _section_title("🔍", "ANOMALI  (ISOLATION FOREST)", C_PINK)
+        iso_card = tk.Frame(body, bg=bg_card,
+                            highlightbackground=C_PINK, highlightthickness=1)
+        iso_card.pack(fill="x", pady=2)
+        iso_inner = tk.Frame(iso_card, bg=bg_card)
+        iso_inner.pack(fill="x", padx=8, pady=5)
+        self._ml_iso_status = tk.Label(iso_inner, text="Menunggu…",
+                                        font=("Segoe UI", 9, "bold"),
+                                        bg=bg_card, fg=C_TEXT)
+        self._ml_iso_status.pack(anchor="w")
+        self._ml_iso_reason = tk.Label(iso_inner, text="",
+                                        font=("Segoe UI", 7),
+                                        bg=bg_card, fg=C_TEXT_DIM,
+                                        wraplength=250, justify="left")
+        self._ml_iso_reason.pack(anchor="w")
+
+        _sep()
+        # ── 5. MultiOutput Skill Bars ──────────────────────────────
+        _section_title("📊", "PROFIL PERFORMA  (MULTIOUTPUT)", C_GOLD)
+        bars_frame = tk.Frame(body, bg=bg_panel)
+        bars_frame.pack(fill="x", pady=(2, 4))
+
+        self._ml_skill_bars = {}
+        bar_specs = [
+            ("speed",       "Kecepatan",     C_ACCENT),
+            ("accuracy",    "Akurasi",       C_ACCENT2),
+            ("consistency", "Konsistensi",   C_PURPLE),
+            ("independence","Kemandirian",   C_GOLD),
+        ]
+        for key, label, color in bar_specs:
+            row = tk.Frame(bars_frame, bg=bg_panel)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label,
+                     font=("Segoe UI", 8), bg=bg_panel, fg=C_TEXT_DIM,
+                     width=13, anchor="w").pack(side="left")
+            track = tk.Frame(row, bg=C_BORDER, height=7)
+            track.pack(side="left", fill="x", expand=True)
+            fill = tk.Frame(track, bg=color, height=7, width=4)
+            fill.place(x=0, y=0)
+            pct_lbl = tk.Label(row, text=" —%",
+                                font=("Segoe UI", 8, "bold"),
+                                bg=bg_panel, fg=color, width=5)
+            pct_lbl.pack(side="right")
+            self._ml_skill_bars[key] = (track, fill, pct_lbl, color)
+
+        # ── Footer: sklearn status + last update ──────────────────
+        tk.Frame(pnl, height=1, bg=sep_col).pack(fill="x")
+        foot = tk.Frame(pnl, bg=bg_panel)
+        foot.pack(fill="x", padx=8, pady=4)
+        sklearn_txt = "sklearn AKTIF" if SKLEARN_AVAILABLE else "sklearn tidak tersedia"
+        sklearn_col = C_ACCENT2 if SKLEARN_AVAILABLE else C_TEXT_DIM
+        tk.Label(foot, text=sklearn_txt,
+                 font=("Segoe UI", 7), bg=bg_panel, fg=sklearn_col).pack(side="left")
+        self._ml_last_update_lbl = tk.Label(foot, text="",
+                                             font=("Segoe UI", 7),
+                                             bg=bg_panel, fg=C_TEXT_DIM)
+        self._ml_last_update_lbl.pack(side="right")
+
+        # Muat data pertama setelah panel selesai dirender
+        self.after(120, self._schedule_ml_refresh)
+
+    # ── Refresh loop ──────────────────────────────────────────────────────
+    def _schedule_ml_refresh(self):
+        """Jadwalkan refresh panel: jalankan komputasi ML di background thread."""
+        if not self._ml_panel_visible:
+            return
+        if self._ml_refresh_busy:
+            return   # refresh sedang berjalan, skip
+
+        self._ml_refresh_busy = True
+        self._ml_last_refresh = time.time()
+
+        # Update tombol refresh sementara loading
+        try:
+            self._ml_refresh_btn.config(text="⏳")
+        except Exception:
+            pass
+
+        snap = self._build_live_session()
+        rem  = self._remaining_pct()
+
+        def _bg():
+            result = {}
+            # Setiap blok try sendiri -- partial failure tidak hapus data lain
+            try:
+                pt, conf, _ = self.ml.classify_player_confidence()
+                result["knn_type"] = pt
+                result["knn_conf"] = conf
+            except Exception:
+                result["knn_type"] = "Unknown"
+                result["knn_conf"] = 0.0
+
+            try:
+                thresh = self.ml.compute_hint_threshold(
+                    self.grid_size, self.difficulty, rem)
+                result["hint_thresh"] = thresh
+            except Exception:
+                result["hint_thresh"] = None
+
+            try:
+                pred, avail = self.ml.predict_next_score()
+                result["rfr_score"] = pred
+                result["rfr_avail"] = avail
+            except Exception:
+                result["rfr_score"] = None
+                result["rfr_avail"] = False
+
+            try:
+                anom, reason = self.ml.detect_anomaly()
+                result["iso_status"] = anom
+                result["iso_reason"] = reason
+            except Exception:
+                result["iso_status"] = "unknown"
+                result["iso_reason"] = "Tidak dapat dianalisis"
+
+            try:
+                profile = self.ml.predict_stat_profile(snap)
+                result["speed"]        = profile.get("speed_index",       0.0)
+                result["accuracy"]     = profile.get("accuracy_index",    0.0)
+                result["consistency"]  = profile.get("consistency_index", 0.0)
+                result["independence"] = profile.get("independence_index",0.0)
+            except Exception:
+                feat = self.ml.extract_features()
+                result["speed"]       = max(0, min(100, 100 - feat.get("avg_time_per_cell",10)*8))
+                result["accuracy"]    = max(0, min(100, 100 - feat.get("error_rate",0)*250))
+                result["consistency"] = feat.get("completion_rate",0)*100
+                result["independence"]= max(0, min(100, (1-feat.get("hint_rate",0))*100))
+
+            # Idle saat ini — diukur di sini agar tepat waktu
+            result["idle_now"] = time.time() - self.last_action
+            return result
+
+        def _done(result):
+            try:
+                self._apply_ml_data(result)
+            except Exception:
+                pass
+            self._ml_refresh_busy = False
+            try:
+                self._ml_refresh_btn.config(text="🔄")
+            except Exception:
+                pass
+            # Jadwalkan refresh berikutnya setelah 8 detik
+            if self._ml_panel_visible:
+                try:
+                    if self._ml_panel_job:
+                        self.after_cancel(self._ml_panel_job)
+                except Exception:
+                    pass
+                self._ml_panel_job = self.after(
+                    2000, self._schedule_ml_refresh)
+
+        def _thread_target():
+            data = _bg()
+            try:
+                self.after(0, lambda: _done(data))
+            except Exception:
+                self._ml_refresh_busy = False
+
+        threading.Thread(target=_thread_target, daemon=True).start()
+
+    # ── Terapkan hasil ke widget panel ───────────────────────────────────
+    def _apply_ml_data(self, d):
+        """Update semua widget ML panel dengan data hasil komputasi."""
+        if not self._ml_panel_visible:
+            return
+        if not self._ml_panel_frame or not self._ml_panel_frame.winfo_exists():
+            return
+        # Pastikan panel terbuka kembali jika widget hilang
+        if not hasattr(self, "_ml_knn_type") or self._ml_knn_type is None:
+            return
+
+        _TYPE_EMOJIS = {
+            "Speedrunner":  "⚡",
+            "Careful":      "🛡",
+            "Learner":      "📚",
+            "Struggling":   "💪",
+            "Inconsistent": "🎲",
+        }
+        _TYPE_COLORS = {
+            "Speedrunner":  C_ACCENT,
+            "Careful":      C_ACCENT2,
+            "Learner":      C_PURPLE,
+            "Struggling":   C_ERROR,
+            "Inconsistent": C_WARN,
+        }
+
+        # 1. KNN
+        pt   = d.get("knn_type", "?")
+        conf = d.get("knn_conf", 0.0)
+        emoji = _TYPE_EMOJIS.get(pt, "🎮")
+        color = _TYPE_COLORS.get(pt, C_ACCENT)
+        try:
+            self._ml_knn_emoji.config(text=emoji, fg=color)
+            self._ml_knn_type.config(text=pt, fg=color)
+            conf_txt = (f"Conf: {conf:.0f}%" if conf > 0
+                        else "Rule-based")
+            self._ml_knn_conf.config(text=conf_txt)
+            # Animasi bar confidence
+            bar_w = 4
+            try:
+                self._ml_knn_bar.update_idletasks()
+                track_w = self._ml_knn_bar.master.winfo_width()
+                if track_w > 8:
+                    bar_w = max(4, int(track_w * conf / 100))
+            except Exception:
+                pass
+            self._ml_knn_bar.config(bg=color, width=bar_w)
+        except Exception:
+            pass
+
+        # 2. Hint Timer
+        try:
+            thresh = d.get("hint_thresh")
+            idle   = d.get("idle_now", 0.0)
+            if thresh is not None:
+                self._ml_hint_thresh.config(
+                    text=f"{thresh:.0f} det",
+                    fg=C_WARN if idle < thresh else C_ERROR)
+            else:
+                self._ml_hint_thresh.config(text="—", fg=C_TEXT_DIM)
+            idle_col = (C_ERROR if thresh and idle > thresh
+                        else C_TEXT)
+            self._ml_hint_idle.config(
+                text=f"{idle:.0f} det", fg=idle_col)
+        except Exception:
+            pass
+
+        # 3. RFR Predicted Score
+        try:
+            if d.get("rfr_avail") and d.get("rfr_score") is not None:
+                score_txt = f"{d['rfr_score']:,} poin"
+                self._ml_rfr_score.config(text=score_txt, fg=C_ACCENT2)
+            elif not SKLEARN_AVAILABLE:
+                self._ml_rfr_score.config(text="sklearn off", fg=C_TEXT_DIM)
+            else:
+                self._ml_rfr_score.config(
+                    text=f"Butuh ≥3 sesi  ({len(self.ml.sessions)} ada)",
+                    fg=C_TEXT_DIM)
+        except Exception:
+            pass
+
+        # 4. Isolation Forest
+        try:
+            status = d.get("iso_status", "unknown")
+            reason = d.get("iso_reason", "")
+            status_map = {
+                "normal":  ("✅  Normal",      C_ACCENT2),
+                "anomaly": ("⚠  Anomali",     C_ERROR),
+                "unknown": ("⬜  Belum cukup", C_TEXT_DIM),
+            }
+            stxt, scol = status_map.get(status, ("—", C_TEXT_DIM))
+            self._ml_iso_status.config(text=stxt, fg=scol)
+            self._ml_iso_reason.config(text=reason)
+        except Exception:
+            pass
+
+        # 5. Skill bars
+        bar_keys = {
+            "speed":        d.get("speed",       0.0),
+            "accuracy":     d.get("accuracy",    0.0),
+            "consistency":  d.get("consistency", 0.0),
+            "independence": d.get("independence",0.0),
+        }
+        for key, pct in bar_keys.items():
+            try:
+                track, fill, pct_lbl, color = self._ml_skill_bars[key]
+                pct_lbl.config(text=f"{pct:4.0f}%")
+                track.update_idletasks()
+                tw = track.winfo_width()
+                if tw > 8:
+                    target_w = max(4, int(tw * pct / 100))
+                    fill.config(width=target_w, bg=color)
+            except Exception:
+                pass
+
+        # Footer timestamp
+        try:
+            ts = time.strftime("%H:%M:%S")
+            self._ml_last_update_lbl.config(text=f"Update: {ts}")
+        except Exception:
+            pass
 
 # =====================================================
 # SCREEN: PLAYER SELECT  (Ganti Pemain)
@@ -5095,7 +6521,54 @@ class PlayerSelectScreen(tk.Frame):
         tc       = st["type_color"]
         is_me    = (username == self.current_user)
         PANEL_BG = C_BG
+        
+        # ── Empty state: pemain baru belum punya sesi ─────────────────
+        if st["n_sess"] == 0:
+            empty = tk.Frame(self._right_panel, bg=PANEL_BG)
+            empty.pack(fill="both", expand=True)
 
+            inner = tk.Frame(empty, bg=C_SURFACE,
+                             highlightbackground=C_BORDER, highlightthickness=1)
+            inner.place(relx=0.5, rely=0.5, anchor="center", width=380, height=290)
+
+            # Stripe atas
+            tk.Frame(inner, bg=tc, height=4).pack(fill="x")
+
+            # Avatar kecil
+            AV = 52
+            av_cv = tk.Canvas(inner, width=AV, height=AV,
+                              bg=C_SURFACE, highlightthickness=0)
+            av_cv.pack(pady=(22, 0))
+            av_cv.after(80, lambda c=av_cv, col=tc, s=AV:
+                        self._draw_avatar(c, s, col, self._initials(username)))
+
+            tk.Label(inner, text=f"@{username}",
+                     font=("Segoe UI", 14, "bold"),
+                     bg=C_SURFACE, fg=C_TEXT).pack(pady=(8, 0))
+
+            tk.Label(inner, text="🎮  Pemain Baru",
+                     font=("Segoe UI", 10, "bold"),
+                     bg=C_SURFACE, fg=tc).pack(pady=(4, 0))
+
+            tk.Frame(inner, height=1, bg=C_BORDER).pack(fill="x", padx=24, pady=14)
+
+            tk.Label(inner,
+                     text="Belum ada data permainan.\nMainkan satu sesi untuk melihat statistik.",
+                     font=("Segoe UI", 10),
+                     bg=C_SURFACE, fg=C_TEXT_DIM,
+                     justify="center").pack()
+
+            # Tombol langsung pilih pemain ini
+            tk.Button(inner,
+                      text="▶  Mulai Bermain",
+                      font=("Segoe UI", 10, "bold"),
+                      bg=C_ACCENT, fg=C_BG,
+                      activebackground=C_ACCENT2, activeforeground=C_BG,
+                      relief="flat", cursor="hand2", pady=8,
+                      command=lambda: self.on_select(username)
+                      ).pack(fill="x", padx=24, pady=(14, 0))
+            return
+        
         # ── Scrollable area: correct structure ────────────────────
         # container holds Canvas + Scrollbar side-by-side (both are
         # children of container, NOT of each other).
@@ -5365,32 +6838,26 @@ class PlayerSelectScreen(tk.Frame):
                      text=f"Kamu akan berganti ke  @{username}",
                      font=("Segoe UI", 10, "bold"),
                      bg=C_SURFACE, fg=C_TEXT, anchor="w").pack(anchor="w")
-            tk.Label(msg_col,
-                     text=f"Sesi @{self.current_user} yang sedang berjalan akan dihentikan.",
-                     font=("Segoe UI", 9),
-                     bg=C_SURFACE, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
+            if self.current_user:
+                tk.Label(msg_col,
+                         text=f"Sesi @{self.current_user} yang sedang berjalan akan dihentikan.",
+                         font=("Segoe UI", 9),
+                         bg=C_SURFACE, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
+            else:
+                tk.Label(msg_col,
+                         text="Klik konfirmasi untuk mulai bermain.",
+                         font=("Segoe UI", 9),
+                         bg=C_SURFACE, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
 
-            # Two buttons side by side: Cancel + Confirm
-            btn_row = tk.Frame(cta_inner, bg=C_SURFACE)
-            btn_row.pack(fill="x")
-
-            tk.Button(btn_row,
-                      text="✕   BATAL",
-                      font=("Segoe UI", 10),
-                      bg=C_SURFACE2, fg=C_TEXT_DIM,
-                      activebackground=C_BORDER, activeforeground=C_TEXT,
-                      relief="flat", cursor="hand2", pady=10,
-                      command=lambda: self.on_select(self.current_user)
-                      ).pack(side="left", fill="x", expand=True, padx=(0,6))
-
-            tk.Button(btn_row,
+            # Single confirm button — no cancel to avoid None-username edge case
+            tk.Button(cta_inner,
                       text=f"✓   KONFIRMASI — MASUK SEBAGAI @{username.upper()}",
                       font=("Segoe UI", 10, "bold"),
                       bg=tc, fg=C_BG,
                       activebackground="#FFFFFF", activeforeground=C_BG,
                       relief="flat", cursor="hand2", pady=10,
                       command=lambda u=username: self.on_select(u)
-                      ).pack(side="left", fill="x", expand=True)
+                      ).pack(fill="x")
 
 
 class SudokuApp:
@@ -5409,18 +6876,26 @@ class SudokuApp:
             try:
                 from PIL import Image, ImageTk
                 _pil = Image.open(_logo_path)
-                # Window icon (32×32)
-                _icon = _pil.resize((32, 32), Image.LANCZOS)
+                
+                # Deteksi DPI scaling dari tkinter
+                _dpi  = self.root.winfo_fpixels('1i')  # pixel per inch
+                _scale = max(1.0, _dpi / 96.0)          # 96 DPI = baseline
+                _logo_sz  = int(32 * _scale)
+                _header_sz = int(48 * _scale)
+                
+                _icon = _pil.resize((_logo_sz, _logo_sz), Image.LANCZOS)
                 self.logo_image = ImageTk.PhotoImage(_icon)
                 self.root.iconphoto(True, self.logo_image)
-                # Header logo (48×48) — disimpan di root agar bisa diakses LayarLogin
-                _hdr = _pil.resize((48, 48), Image.LANCZOS)
+                
+                _hdr = _pil.resize((_header_sz, _header_sz), Image.LANCZOS)
                 self.logo_small = ImageTk.PhotoImage(_hdr)
                 self.root._logo_tk = self.logo_small
             except ImportError:
-                # Fallback tanpa Pillow: hanya bisa pakai .gif/.png native tkinter
                 try:
-                    self.logo_image = tk.PhotoImage(file=_logo_path)
+                    raw = tk.PhotoImage(file=_logo_path)
+                    # Hitung faktor subsample agar lebar max ~48px
+                    factor = max(1, raw.width() // 48)
+                    self.logo_image = raw.subsample(factor, factor)
                     self.root.iconphoto(True, self.logo_image)
                     self.logo_small = self.logo_image
                     self.root._logo_tk = self.logo_small
@@ -5436,8 +6911,16 @@ class SudokuApp:
 
         self.root.bind("<<PlayAgain>>",        self._play_again)
         self.root.bind("<<ExitGame>>",         self._exit)
-        self.root.bind("<<ChangePlayer>>",     self._show_player_select)  # → PlayerSelectScreen
+        self.root.bind("<<ChangePlayer>>",     self._show_player_select)
         self.root.bind("<<Logout>>",           self._logout)
+        self.root.bind("<<BackToGrid>>",       lambda _: self._back_to_grid_select())
+
+        # ── Kiosk Reset Hotkey — F5 / Ctrl+Shift+R ────────────────────
+        # Langsung logout tanpa dialog: cocok untuk pergantian pemain cepat
+        # di pameran. Aktif di semua layar (bukan hanya saat game berjalan).
+        self.root.bind_all("<F5>",             self._kiosk_reset)
+        self.root.bind_all("<Control-Shift-r>", self._kiosk_reset)
+        self.root.bind_all("<Control-Shift-R>", self._kiosk_reset)
 
         # ── Musik ─────────────────────────────────────────────────────
         self._music_ready  = False
@@ -5449,15 +6932,16 @@ class SudokuApp:
         self.root.bind_all("<m>", self._toggle_music)
         self.root.bind_all("<M>", self._toggle_music)
 
-        # Label hint musik — sudut kanan bawah
-        self._music_hint = tk.Label(
-            self.root,
-            text="♪ [M] Musik: --",
-            font=("Segoe UI", 8),
-            bg=C_BG,
-            fg="#6B7280",
+        # Icon musik — sudut kanan bawah (Canvas agar bisa digambar)
+        self._music_btn = tk.Canvas(
+            self.root, width=44, height=44,
+            highlightthickness=0, cursor="hand2",
         )
-        self._music_hint.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-8)
+        self._music_btn.place(relx=1.0, rely=1.0, anchor="se", x=-14, y=-14)
+        self._music_btn.bind("<Button-1>", self._toggle_music)
+        self._music_btn.bind("<Enter>",    self._on_music_btn_enter)
+        self._music_btn.bind("<Leave>",    self._on_music_btn_leave)
+        self._draw_music_btn()
 
         # ── Theme toggle button (sun/moon) — sudut kanan atas ────────
         self._rebuild_fn = None
@@ -5484,6 +6968,7 @@ class SudokuApp:
             return
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            _build_sfx()   # generate SFX programatik
         except Exception:
             return
 
@@ -5504,68 +6989,118 @@ class SudokuApp:
             pygame.mixer.music.load(MUSIC_FILE)
             pygame.mixer.music.set_volume(0.7)
             pygame.mixer.music.play(loops=-1)   # -1 = looping selamanya
-            self._music_on = True
-            self._update_music_hint()
+            self._music_on     = True
+            self._music_paused = False
+            self._draw_music_btn()
         except Exception:
             pass
 
     def _toggle_music(self, event=None):
-        """Toggle musik on/off dengan tombol M.
-        Di tampilan awal (LoginScreen), tombol M diabaikan agar tidak
-        mengganggu input username. Di layar lain, M akan pause/unpause
-        musik dan melanjutkan tepat dari detik yang sama saat ditekan lagi.
-        """
         if not PYGAME_AVAILABLE:
             return
 
-        # ── Abaikan jika fokus ada di Entry widget (sedang mengetik username) ──
-        try:
-            focused = self.root.focus_get()
-            if isinstance(focused, tk.Entry):
-                return
-        except Exception:
-            pass
-
-        try:
-            if self._music_on:
-                # Musik sedang play → pause (simpan posisi)
-                pygame.mixer.music.pause()
-                self._music_on     = False
-                self._music_paused = True
-            else:
-                if not self._music_ready:
+        is_mouse_click = (
+            event is not None and
+            str(getattr(event, 'type', '')).lower() in ('4', 'buttonpress')
+        )
+        if not is_mouse_click:
+            try:
+                focused = self.root.focus_get()
+                if isinstance(focused, tk.Entry):
                     return
+            except Exception:
+                pass
+
+        if self._music_on:
+            try:
+                pygame.mixer.music.pause()
+            except Exception:
+                pass
+            self._music_on     = False
+            self._music_paused = True
+        else:
+            if not self._music_ready:
+                self._music_paused = False
+                return
+            try:
                 if self._music_paused:
-                    # Musik pernah di-pause → lanjutkan dari detik yang sama
                     pygame.mixer.music.unpause()
-                    self._music_paused = False
-                    self._music_on     = True
                 else:
-                    # Belum pernah diputar sama sekali → mulai dari awal
                     self._start_music()
-            self._update_music_hint()
-        except Exception:
-            pass
+                    return
+                self._music_on     = True
+                self._music_paused = False
+            except Exception:
+                return
+
+        self._draw_music_btn()
+
+    def _draw_music_btn(self, hover=False):
+        """Gambar icon musik di canvas — note penuh = ON, redup + garis = OFF."""
+        c = self._music_btn
+        c.delete("all")
+        is_dark = (_CURRENT_THEME_NAME == "dark")
+        on = self._music_on
+
+        # Warna berdasarkan tema dan state
+        if is_dark:
+            if on:
+                bg_fill  = "#1A2840" if not hover else "#223050"
+                ring_col = "#2A4060" if not hover else "#3A6090"
+                note_col = "#58A6FF"
+            else:
+                bg_fill  = "#141418" if not hover else "#1C1C22"
+                ring_col = "#2A2A32" if not hover else "#38383F"
+                note_col = "#3A3A44"
+        else:
+            if on:
+                bg_fill  = "#E0E8F4" if not hover else "#CCD6EC"
+                ring_col = "#B0C0D8" if not hover else "#90A8C8"
+                note_col = "#0969DA"
+            else:
+                bg_fill  = "#E8EDF5" if not hover else "#DDE3EE"
+                ring_col = "#C5CFE0" if not hover else "#A8B8CC"
+                note_col = "#9CA3AF"
+
+        # Lingkaran latar
+        c.create_oval(2, 2, 42, 42, fill=bg_fill,
+                      outline=ring_col, width=2)
+
+        # Ikon not musik ♫
+        c.create_text(22, 23, text="♫",
+                      font=("Segoe UI", 17, "bold"),
+                      fill=note_col, anchor="center")
+
+        # Garis coret diagonal saat OFF
+        if not on:
+            strike = "#FF5555" if is_dark else "#CF222E"
+            c.create_line(9, 9, 35, 35,
+                          fill=strike, width=2.5, capstyle="round")
+
+        c.config(bg=C_BG)
+
+    def _on_music_btn_enter(self, _=None):
+        self._draw_music_btn(hover=True)
+
+    def _on_music_btn_leave(self, _=None):
+        self._draw_music_btn(hover=False)
 
     def _update_music_hint(self):
-        """Update teks hint musik di sudut bawah kanan."""
+        """Refresh icon musik setelah state berubah."""
         try:
-            if self._music_on:
-                self._music_hint.config(text="♪ [M] Musik: ON ", fg="#6B7280")
-            else:
-                self._music_hint.config(text="♪ [M] Musik: OFF", fg="#4B5563")
+            self._draw_music_btn()
         except Exception:
             pass
 
     # ── Overlay helpers (theme btn + music hint selalu di atas) ──────
     def _raise_overlay(self):
-        """Angkat theme button dan music hint ke paling atas stacking order."""
+        """Angkat theme button dan music icon ke paling atas stacking order."""
         try:
             self.root.tk.call("raise", self._theme_btn._w)
         except Exception:
             pass
         try:
-            self._music_hint.tkraise()
+            self.root.tk.call("raise", self._music_btn._w)
         except Exception:
             pass
 
@@ -5596,7 +7131,19 @@ class SudokuApp:
     def _show_login(self):
         self._rebuild_fn = self._show_login
         self._clear()
-        self.screen = LoginScreen(self.root, self._on_login, self._show_player_select_from_login)
+        self.screen = LoginScreen(
+            self.root,
+            self._on_login,
+            self._show_player_select_from_login,
+            on_attractor=self._show_attractor,   # idle → demo screen
+        )
+        self.root.after(50, self._raise_overlay)
+
+    def _show_attractor(self):
+        """Tampilkan AttractorScreen saat LoginScreen idle >= 45 detik."""
+        self._rebuild_fn = self._show_login   # kembali ke login saat dismiss
+        self._clear()
+        self.screen = AttractorScreen(self.root, on_dismiss=self._show_login)
         self.root.after(50, self._raise_overlay)
 
     def _show_player_select_from_login(self, initial_selected=None):
@@ -5700,6 +7247,7 @@ class SudokuApp:
         self._show_game()
 
     def _play_again(self, _=None):
+        self._rebuild_fn = self._play_again
         self._clear()
         self.screen = DifficultyScreen(
             self.root, self.username, self.grid_size,
@@ -5752,6 +7300,14 @@ class SudokuApp:
         self.grid_size  = 3
         self.difficulty = "Normal"
         self._show_login()
+
+    def _kiosk_reset(self, _=None):
+        """
+        Kiosk Reset — logout instan tanpa dialog konfirmasi.
+        Dipanggil via F5, Ctrl+Shift+R, atau tombol 'Logout / Reset Sesi' di sidebar.
+        Cocok untuk pergantian pemain cepat di pameran.
+        """
+        self._logout()
 
     def _exit(self, _=None):
         if messagebox.askyesno("Keluar", "Yakin ingin keluar?", parent=self.root):
@@ -5818,26 +7374,23 @@ class SudokuApp:
         new = "light" if _CURRENT_THEME_NAME == "dark" else "dark"
         apply_theme(new)
 
-        # Update root and music hint backgrounds
+        # Update root background
         self.root.configure(bg=C_BG)
-        try:
-            self._music_hint.config(bg=C_BG)
-        except Exception:
-            pass
 
-        # Redraw the toggle button
+        # Redraw both overlay buttons with new theme colors
         self._draw_theme_btn()
+        self._draw_music_btn()
 
-        # Lift the button above any new screen widgets
+        # Lift both buttons above any new screen widgets
         self.root.tk.call("raise", self._theme_btn._w)
-        self._music_hint.tkraise()
+        self.root.tk.call("raise", self._music_btn._w)
 
         # Rebuild current screen
         if callable(self._rebuild_fn):
             try:
                 self._rebuild_fn()
                 self.root.tk.call("raise", self._theme_btn._w)
-                self._music_hint.tkraise()
+                self.root.tk.call("raise", self._music_btn._w)
             except Exception:
                 pass
 
@@ -6696,13 +8249,766 @@ def _ml_dashboard_session(session, ml):
     return disp
 
 
+# =====================================================
+# ACHIEVEMENT POPUP
+# =====================================================
+class AchievementPopup(tk.Frame):
+    def __init__(self, master, badges, on_done):
+        super().__init__(master, bg="")
+        self.on_done  = on_done
+        self.badges   = badges
+        self._idx      = 0
+        self._after_id = None
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.lift()
+        self._show_next()
+
+    def _show_next(self):
+        for w in self.winfo_children():
+            try: w.destroy()
+            except Exception: pass
+        if self._idx >= len(self.badges):
+            self._finish()
+            return
+        badge = self.badges[self._idx]
+        self._idx += 1
+        color = badge.get("warna", "#58A6FF")
+        self.config(bg="#0D1117")
+        card = tk.Frame(self, bg=C_SURFACE,
+                        highlightbackground=color, highlightthickness=3)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=400, height=230)
+        tk.Frame(card, bg=color, height=6).pack(fill="x")
+        tk.Label(card, text="🏆  ACHIEVEMENT UNLOCKED",
+                 font=("Segoe UI", 9, "bold"), bg=C_SURFACE, fg=color).pack(pady=(14, 0))
+        tk.Label(card, text=badge["emoji"], font=("Segoe UI", 38),
+                 bg=C_SURFACE).pack(pady=(4, 0))
+        tk.Label(card, text=badge["nama"], font=("Segoe UI", 17, "bold"),
+                 bg=C_SURFACE, fg=C_TEXT).pack()
+        tk.Label(card, text=badge["desc"], font=("Segoe UI", 10),
+                 bg=C_SURFACE, fg=C_TEXT_DIM).pack(pady=(4, 0))
+        bar_host = tk.Frame(card, bg=C_SURFACE2, height=5)
+        bar_host.pack(fill="x", padx=24, pady=(14, 0))
+        bar = tk.Frame(bar_host, bg=color, height=5)
+        bar.place(relx=0, rely=0, relwidth=1.0, relheight=1.0)
+        STEPS = 60
+        def _shrink(step):
+            if not self.winfo_exists(): return
+            try: bar.place(relwidth=max(0.0, 1.0 - step / STEPS))
+            except Exception: pass
+            if step < STEPS:
+                self._after_id = self.after(50, lambda: _shrink(step + 1))
+            else:
+                self._show_next()
+        _shrink(0)
+
+    def _finish(self):
+        try:
+            if self._after_id: self.after_cancel(self._after_id)
+        except Exception: pass
+        try: self.destroy()
+        except Exception: pass
+        if callable(self.on_done): self.on_done()
+
+
+# =====================================================
+# SCORE CARD PNG
+# =====================================================
+def _save_score_card(username, session, player_type, type_color, ai_message,
+                     all_sessions=None, ml_summary=None, achievements=None,
+                     parent_widget=None):
+    """Score Card PNG — vibrant poster untuk pameran & sosmed.
+    Ukuran 860x auto-height agar achievement section dinamis.
+    Tidak ada blank space, tidak ada _PilImage.blend yang menggelapkan.
+    """
+    if not PIL_AVAILABLE:
+        if parent_widget:
+            messagebox.showinfo("Info",
+                "Pillow belum terinstall.\nJalankan: pip install Pillow",
+                parent=parent_widget)
+        return None
+
+    try:
+        import math as _math, random as _rnd, datetime as _dt
+
+        W = 860
+
+        # ── Palette ──────────────────────────────────────────────────
+        def _hex(h):
+            h = h.lstrip("#")
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        def _lerp(c1, c2, t):
+            return tuple(max(0,min(255,int(c1[i]+(c2[i]-c1[i])*t))) for i in range(3))
+        def _blend(b, o, a):
+            return tuple(max(0,min(255,int(b[i]*(1-a)+o[i]*a))) for i in range(3))
+        def _lighten(c, f):
+            return tuple(max(0,min(255,int(v+(255-v)*f))) for v in c)
+        def _darken(c, f):
+            return tuple(max(0,min(255,int(v*(1-f)))) for v in c)
+        def _hex_rgba(h, a=255):
+            r,g,b = _hex(h)
+            return (r,g,b,a)
+
+        BG      = _hex("#0B0F1E")
+        BG2     = _hex("#111827")
+        CARD    = _hex("#1A2235")
+        CARD2   = _hex("#1E2A3A")
+        BORDER  = _hex("#2D3A52")
+        BORDER2 = _hex("#3D5070")
+        TXT     = _hex("#EFF6FF")
+        DIM     = _hex("#7A8BA8")
+        DIM2    = _hex("#A8BACE")
+
+        ACC_RAW = type_color if type_color else "#00D4FF"
+        ACC     = _hex(ACC_RAW)
+        br      = sum(ACC)/3
+        if br < 150:
+            ACC = tuple(min(255,int(v*2.0)) for v in ACC)
+
+        CYAN    = _hex("#00D4FF")
+        MAGENTA = _hex("#FF3A8C")
+        GOLD    = _hex("#FFD24C")
+        GREEN   = _hex("#00F0A0")
+        PURPLE  = _hex("#C678FF")
+        ORANGE  = _hex("#FF8C42")
+        WHITE   = _hex("#FFFFFF")
+
+        # ── Session data ─────────────────────────────────────────────
+        diff      = session.get("difficulty","Normal")
+        gs        = session.get("grid_size",3)
+        N         = gs*gs
+        score     = int(session.get("score",0) or 0)
+        t_sec     = int(session.get("total_time",0))
+        errors    = int(session.get("errors",0))
+        hints     = int(session.get("hints_used",0))
+        moves     = int(session.get("moves",0))
+        completed = session.get("completed",False)
+        near_miss = int(session.get("near_miss",0))
+        guessing  = int(session.get("guessing",0))
+        t_str     = f"{t_sec//60:02d}:{t_sec%60:02d}"
+        grid_s    = f"{N}\u00d7{N}"
+        diff_col  = MAGENTA if diff=="Hard" else (GREEN if diff=="Easy" else CYAN)
+
+        ml        = ml_summary or {}
+        ml_conf   = float(ml.get("ml_confidence",0) or 0)
+        pred_sc   = ml.get("predicted_next_score")
+        anomaly   = ml.get("anomaly_status","unknown")
+        feat      = ml.get("features",{})
+        err_rate  = float(feat.get("error_rate", errors/max(moves,1)))
+        hint_rate = float(feat.get("hint_rate",  hints /max(moves,1)))
+
+        hist_scores = []
+        if all_sessions:
+            done = [s for s in all_sessions if s.get("completed")][-12:]
+            hist_scores = [int(s.get("score",0) or 0) for s in done]
+        if not hist_scores:
+            hist_scores = [score]
+        total_sess = len(all_sessions or [])
+
+        ach_list = achievements or []
+        rng = _rnd.Random(username+str(score)+str(t_sec))
+
+        # ── Fonts ────────────────────────────────────────────────────
+        def _f(nms,sz):
+            for n in (nms or []):
+                try: return _PilFont.truetype(n,sz)
+                except: pass
+            return _PilFont.load_default()
+        REG  = ["segoeui.ttf","arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+        BOLD = ["segoeuib.ttf","arialbd.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+        F = {
+            "xl":    _f(BOLD,52), "title": _f(BOLD,30), "h1": _f(BOLD,22),
+            "h2":    _f(BOLD,17), "h3":    _f(BOLD,13), "body":_f(REG,13),
+            "sm":    _f(REG,12),  "xs":    _f(REG,10),
+        }
+
+        # ── Layout planning ──────────────────────────────────────────
+        HDR_H    = 272
+        TILE_H   = 58; TILE_GAP = 7
+        TILE_W   = 183
+        STAT_W   = 390          # lebar kolom kiri
+        RIGHT_X  = STAT_W+22
+        RIGHT_W  = W-RIGHT_X-16
+        PAD      = 16
+
+        ACC_BAR_H = 52
+        RADAR_H   = 230
+        LEFT_H    = 3*(TILE_H+TILE_GAP)+ACC_BAR_H+RADAR_H+12
+
+        DONUT_AREA_H = 140
+        BAR_CHART_H  = 160
+        ML_BAR_H     = 42
+        RIGHT_H      = DONUT_AREA_H+BAR_CHART_H+ML_BAR_H+8
+
+        GRID_VIZ_H   = 128
+        # Achievement: hitung baris dinamis
+        MAX_ACH_PER_ROW = 4
+        n_ach    = len(ach_list)
+        ach_rows = max(1, (n_ach+MAX_ACH_PER_ROW-1)//MAX_ACH_PER_ROW) if n_ach else 1
+        ACH_H    = 28+ach_rows*28+8 if n_ach else 0
+        AI_H     = 96
+        PRED_H   = 44 if pred_sc is not None else 0
+        FOOT_H   = 72
+
+        BODY_Y   = HDR_H+8
+        BODY_H   = max(LEFT_H, RIGHT_H) + GRID_VIZ_H+ACH_H+AI_H+PRED_H+FOOT_H+80
+        H        = HDR_H+BODY_H+FOOT_H
+
+        # ── Canvas RGBA (gunakan RGBA agar polygon transparan tidak blend seluruh img) ──
+        img  = _PilImage.new("RGBA", (W,H), BG+(255,))
+        draw = _PilDraw.Draw(img)
+
+        def _fill(c):   return c+(255,)   # RGB → RGBA opaque
+        def _fillA(c,a):return c+(a,)     # RGB → RGBA dengan alpha
+
+        # ── BG Aurora blobs ──────────────────────────────────────────
+        blob_layer = _PilImage.new("RGBA",(W,H),(0,0,0,0))
+        bd         = _PilDraw.Draw(blob_layer)
+        blobs = [
+            (ACC,    -60, -40, 340, 60),
+            (PURPLE,  W+40, H//3, 280, 50),
+            (CYAN,    W//2,-80,  220, 35),
+            (MAGENTA,-40,  H-60, 200, 30),
+        ]
+        for col,bx,by,br2,ba in blobs:
+            for dr2 in range(br2,0,-8):
+                a2 = int(ba*(1-dr2/br2)**2)
+                bd.ellipse([(bx-dr2,by-dr2),(bx+dr2,by+dr2)],
+                           fill=col+(a2,))
+        img = _PilImage.alpha_composite(img, blob_layer)
+        draw = _PilDraw.Draw(img)
+
+        # Dot grid
+        for _ in range(300):
+            dx,dy = rng.randint(0,W), rng.randint(0,H)
+            dr2   = rng.randint(1,2)
+            dc    = rng.choice([ACC,CYAN,PURPLE,GOLD])
+            da    = rng.randint(12,40)
+            draw.ellipse([(dx-dr2,dy-dr2),(dx+dr2,dy+dr2)], fill=dc+(da,))
+
+        # ── HEADER ───────────────────────────────────────────────────
+        for y in range(HDR_H):
+            t = y/HDR_H
+            rc = _blend(BG2, _blend(BG2,ACC,0.30), 1-(1-t)**0.5)
+            draw.rectangle([(0,y),(W,y+1)], fill=_fill(rc))
+
+        # Speed lines dekoratif
+        for i in range(7):
+            lx = W-24-i*24
+            la = 18-i*2
+            draw.line([(lx,0),(lx-180,HDR_H)], fill=ACC+(la,), width=1)
+
+        # Stripe triple atas
+        draw.rectangle([(0,0),(W,7)],            fill=_fill(ACC))
+        draw.rectangle([(0,7),(int(W*0.56),12)], fill=_fill(_lighten(ACC,0.3)))
+        draw.rectangle([(int(W*0.56),7),(W,12)], fill=_fill(GOLD))
+        draw.ellipse([(int(W*0.56)-6,3),(int(W*0.56)+6,15)], fill=_fill(WHITE))
+
+        # Avatar glow + ring
+        AV_R=56; AV_CX,AV_CY=100,140
+        for gr in range(22,0,-1):
+            ga=int(55*(1-gr/22)**1.5)
+            draw.ellipse([(AV_CX-AV_R-gr,AV_CY-AV_R-gr),(AV_CX+AV_R+gr,AV_CY+AV_R+gr)],
+                         fill=ACC+(ga,))
+        draw.ellipse([(AV_CX-AV_R-5,AV_CY-AV_R-5),(AV_CX+AV_R+5,AV_CY+AV_R+5)],
+                     fill=_fill(GOLD))
+        draw.ellipse([(AV_CX-AV_R-1,AV_CY-AV_R-1),(AV_CX+AV_R+1,AV_CY+AV_R+1)],
+                     fill=_fill(CARD))
+        # Gradient dalam avatar
+        for yr in range(-AV_R,AV_R):
+            hlf = int((AV_R**2-yr**2)**0.5)
+            t   = (yr+AV_R)/(2*AV_R)
+            rc  = _lerp(_lighten(ACC,0.30), _darken(ACC,0.15), t)
+            draw.rectangle([(AV_CX-hlf,AV_CY+yr),(AV_CX+hlf,AV_CY+yr+1)], fill=_fill(rc))
+        initials = "".join(w[0].upper() for w in username.split()[:2]) or username[:2].upper()
+        draw.text((AV_CX,AV_CY), initials, font=F["h1"], fill=_fill(WHITE), anchor="mm")
+
+        # Nama + tipe
+        draw.text((182,92),  f"@{username}",  font=F["title"], fill=_fill(TXT),  anchor="lm")
+        draw.text((182,124), player_type,     font=F["h2"],    fill=_fill(ACC),  anchor="lm")
+
+        # Status pill
+        st_icon = "\u2713" if completed else "\u23f8"
+        st_txt  = "PUZZLE SELESAI" if completed else "SESI BERAKHIR"
+        st_col  = GREEN if completed else ORANGE
+        spw     = int(draw.textlength(f"  {st_icon} {st_txt}  ",font=F["sm"]))+2
+        draw.rounded_rectangle([(182,140),(182+spw,162)], radius=8,
+                                fill=st_col+(55,), outline=st_col+(220,), width=2)
+        draw.text((182+spw//2,151), f"{st_icon}  {st_txt}",
+                  font=F["sm"], fill=_fill(st_col), anchor="mm")
+
+        # Skor besar kanan
+        SC_X = W-40
+        draw.text((SC_X,78),  str(score),    font=F["xl"], fill=_fill(GOLD), anchor="rm")
+        draw.text((SC_X,128), "SKOR AKHIR",  font=F["sm"], fill=_fill(DIM),  anchor="rm")
+        if pred_sc is not None:
+            draw.text((SC_X,150), f"\u2197  Prediksi: {int(pred_sc)}",
+                      font=F["xs"], fill=_fill(PURPLE), anchor="rm")
+        draw.text((SC_X,172), f"{grid_s}  \u2022  {diff}",
+                  font=F["h3"], fill=_fill(diff_col), anchor="rm")
+        draw.text((SC_X,195), f"\u23f1  {t_str}",
+                  font=F["sm"], fill=_fill(DIM2),     anchor="rm")
+
+        # Wave divider header
+        for x in range(W):
+            wy = int(3*_math.sin(x*_math.pi*2/W))
+            draw.rectangle([(x,HDR_H+wy-2),(x+1,HDR_H+wy+1)], fill=ACC+(90,))
+        draw.rectangle([(0,HDR_H+3),(W,HDR_H+4)], fill=_fill(BORDER))
+
+        # ── Helper: card ─────────────────────────────────────────────
+        def _card(x,y,w,h,fill=None,outline=None,radius=11):
+            fill    = _fill(fill    or CARD)
+            outline = _fill(outline or BORDER)
+            draw.rounded_rectangle([(x,y),(x+w,y+h)], radius=radius,
+                                   fill=fill, outline=outline, width=1)
+
+        # ─────────────────────────────────────────────────────────────
+        # KIRI: Stat tiles
+        # ─────────────────────────────────────────────────────────────
+        def _tile(x,y,w,h,icon,lbl,val,col):
+            _card(x,y,w,h,fill=CARD2)
+            draw.rounded_rectangle([(x+2,y+10),(x+5,y+h-10)], radius=2, fill=_fill(col))
+            ic_cx,ic_cy = x+21,y+h//2-7
+            draw.ellipse([(ic_cx-11,ic_cy-11),(ic_cx+11,ic_cy+11)], fill=col+(45,))
+            draw.text((ic_cx,ic_cy), icon, font=F["xs"], fill=_fill(col), anchor="mm")
+            draw.text((x+38,y+13),   lbl,  font=F["xs"], fill=_fill(DIM))
+            # Truncate val jika terlalu panjang
+            val_str = str(val)[:8]
+            draw.text((x+w-10,y+h//2+4), val_str, font=F["h2"],
+                      fill=_fill(col), anchor="rm")
+
+        TW=184; TH=TILE_H; GAP=TILE_GAP
+        tiles = [
+            ("\u23f1","WAKTU",   t_str,      CYAN),
+            ("\u274c","ERROR",   str(errors), MAGENTA if errors>0 else GREEN),
+            ("\u2753","HINT",    str(hints),  PURPLE  if hints>0  else GREEN),
+            ("\u270f","GERAKAN", str(moves),  ACC),
+            ("\u2b50","LEVEL",   diff[:8],    diff_col),
+            ("\u229e","GRID",    grid_s,      GOLD),
+        ]
+        for i,(icon,lbl,val,col) in enumerate(tiles):
+            ci=i%2; ri=i//2
+            tx = PAD+ci*(TW+GAP)
+            ty = BODY_Y+ri*(TH+GAP)
+            _tile(tx,ty,TW,TH,icon,lbl,val,col)
+
+        # Akurasi bar
+        accuracy = max(0,min(100,int(100-err_rate*100)))
+        acc_col  = GREEN if accuracy>=80 else (GOLD if accuracy>=55 else MAGENTA)
+        TL_BTM   = BODY_Y+3*(TH+GAP)
+        _card(PAD,TL_BTM,STAT_W-PAD,ACC_BAR_H,fill=CARD2)
+        draw.rounded_rectangle([(PAD+2,TL_BTM+10),(PAD+5,TL_BTM+ACC_BAR_H-10)],
+                                radius=2, fill=_fill(acc_col))
+        draw.text((PAD+14,TL_BTM+10), "AKURASI", font=F["xs"], fill=_fill(DIM))
+        draw.text((STAT_W-10,TL_BTM+ACC_BAR_H//2+4), f"{accuracy}%",
+                  font=F["h1"], fill=_fill(acc_col), anchor="rm")
+        BX0,BX1 = PAD+14,STAT_W-14
+        BY = TL_BTM+37
+        draw.rounded_rectangle([(BX0,BY),(BX1,BY+8)], radius=4, fill=acc_col+(40,))
+        fx = BX0+int((BX1-BX0)*accuracy/100)
+        if fx>BX0:
+            for xi in range(BX0,fx):
+                t3=(xi-BX0)/(BX1-BX0)
+                draw.rectangle([(xi,BY),(xi+1,BY+8)],
+                               fill=_fill(_lerp(_lighten(acc_col,0.2),acc_col,t3)))
+            draw.rounded_rectangle([(BX0,BY),(fx,BY+8)],radius=4,outline=_fill(acc_col),width=1)
+
+        # Radar chart
+        RC_Y0   = TL_BTM+ACC_BAR_H+8
+        RC_CARD_H = RADAR_H
+        _card(PAD,RC_Y0,STAT_W-PAD,RC_CARD_H)
+        draw.text((PAD+12,RC_Y0+8), "\u25c6  RADAR PERFORMA", font=F["xs"], fill=_fill(DIM))
+
+        RCX    = PAD+(STAT_W-PAD)//2
+        RCY    = RC_Y0+RC_CARD_H//2+8
+        R_MAX  = 88
+        RDIMS  = ["Akurasi","Kecepatan","Konsistensi","Fokus","Efisiensi","Gaya"]
+        consist = min(100,max(0, len([s for s in (all_sessions or []) if s.get("completed")])*18))
+        effic   = min(100,int(score/12))
+        style_v = min(100,int(ml_conf))
+        speed_v = max(0,min(100,int(100-(t_sec/max(N*N,1))*3)))
+        focus_v = max(0,min(100,int(100-hint_rate*200)))
+        R_VALS  = [accuracy,speed_v,consist,focus_v,effic,style_v]
+
+        # Grid radar
+        for lvl in [0.25,0.5,0.75,1.0]:
+            pts = []
+            for k in range(6):
+                ang=_math.radians(k*60-90)
+                pts.append((RCX+R_MAX*lvl*_math.cos(ang), RCY+R_MAX*lvl*_math.sin(ang)))
+            lc = _blend(CARD,BORDER2,lvl)
+            for i in range(6):
+                draw.line([pts[i],pts[(i+1)%6]], fill=_fill(lc), width=1)
+        for k in range(6):
+            ang=_math.radians(k*60-90)
+            draw.line([(RCX,RCY),(RCX+R_MAX*_math.cos(ang),RCY+R_MAX*_math.sin(ang))],
+                      fill=_fill(BORDER2), width=1)
+
+        # Radar polygon — RGBA layer terpisah, tidak merusak warna lain
+        rpts = []
+        for k,v in enumerate(R_VALS):
+            ang=_math.radians(k*60-90)
+            r  =R_MAX*v/100
+            rpts.append((RCX+r*_math.cos(ang), RCY+r*_math.sin(ang)))
+
+        radar_ov = _PilImage.new("RGBA",(W,H),(0,0,0,0))
+        rod = _PilDraw.Draw(radar_ov)
+        rod.polygon(rpts, fill=ACC+(85,))
+        img = _PilImage.alpha_composite(img, radar_ov)
+        draw = _PilDraw.Draw(img)
+
+        for i in range(6):
+            draw.line([rpts[i],rpts[(i+1)%6]], fill=_fill(_lighten(ACC,0.3)), width=2)
+        for pt in rpts:
+            draw.ellipse([(pt[0]-5,pt[1]-5),(pt[0]+5,pt[1]+5)], fill=_fill(WHITE))
+            draw.ellipse([(pt[0]-3,pt[1]-3),(pt[0]+3,pt[1]+3)], fill=_fill(ACC))
+
+        for k,(lbl,v) in enumerate(zip(RDIMS,R_VALS)):
+            ang=_math.radians(k*60-90)
+            lx = RCX+(R_MAX+26)*_math.cos(ang)
+            ly = RCY+(R_MAX+26)*_math.sin(ang)
+            draw.text((lx,ly-7),  lbl,    font=F["xs"], fill=_fill(DIM2),  anchor="mm")
+            draw.text((lx,ly+7),  f"{v}%",font=F["xs"], fill=_fill(_lighten(ACC,0.3)), anchor="mm")
+
+        # ─────────────────────────────────────────────────────────────
+        # KANAN: 3 Donut charts
+        # ─────────────────────────────────────────────────────────────
+        donuts = [
+            ("AKURASI",   accuracy, GREEN   if accuracy>=80  else (GOLD if accuracy>=55 else MAGENTA)),
+            ("KECEPATAN", speed_v,  CYAN    if speed_v>=70   else (GOLD if speed_v>=40  else ORANGE)),
+            ("FOKUS",     focus_v,  PURPLE  if focus_v>=70   else (GOLD if focus_v>=40  else MAGENTA)),
+        ]
+
+        def _donut(cx,cy,ro,ri,pct,col,label,val):
+            # Ring background
+            draw.ellipse([(cx-ro,cy-ro),(cx+ro,cy+ro)], fill=col+(30,), outline=_fill(BORDER2))
+            # Arc fill via pie
+            ang_end = -90+360*pct/100
+            if pct>0:
+                draw.pieslice([(cx-ro,cy-ro),(cx+ro,cy+ro)],
+                              start=-90, end=ang_end, fill=_fill(col))
+            # Lubang dalam
+            draw.ellipse([(cx-ri,cy-ri),(cx+ri,cy+ri)], fill=_fill(CARD))
+            # Glow tepi luar
+            for dg in range(4,0,-1):
+                draw.ellipse([(cx-ro-dg,cy-ro-dg),(cx+ro+dg,cy+ro+dg)],
+                             outline=col+(int(40*dg/4),), width=1)
+            # Dot ujung arc
+            if 0<pct<100:
+                ang_r = _math.radians(ang_end)
+                draw.ellipse([(cx+ro*_math.cos(ang_r)-5, cy+ro*_math.sin(ang_r)-5),
+                              (cx+ro*_math.cos(ang_r)+5, cy+ro*_math.sin(ang_r)+5)],
+                             fill=_fill(WHITE))
+            # Label
+            draw.text((cx,cy-8),  f"{val}%", font=F["h2"], fill=_fill(_lighten(col,0.25)), anchor="mm")
+            draw.text((cx,cy+11), label,     font=F["xs"], fill=_fill(DIM2), anchor="mm")
+
+        DR=50; DI=33
+        D_Y = BODY_Y+22
+        DSP = RIGHT_W//3
+        for di,(lbl,val,col) in enumerate(donuts):
+            dcx = RIGHT_X+DSP*di+DSP//2
+            _donut(dcx, D_Y+DR+4, DR, DI, val, col, lbl, val)
+
+        # ── Bar chart riwayat skor ────────────────────────────────────
+        CH_Y0 = BODY_Y+DONUT_AREA_H
+        CH_H  = BAR_CHART_H
+        CHX0  = RIGHT_X; CHX1 = RIGHT_X+RIGHT_W
+        CHY0  = CH_Y0;   CHY1 = CH_Y0+CH_H
+        _card(CHX0,CHY0,RIGHT_W,CH_H+ML_BAR_H+6)
+        draw.text((CHX0+10,CHY0+8), "\u25fc  RIWAYAT SKOR",
+                  font=F["xs"], fill=_fill(DIM))
+
+        max_s = max(hist_scores) if hist_scores else 1
+        n_bar = len(hist_scores)
+        B_PAD = 14
+        BAR_W = max(8,(RIGHT_W-B_PAD*2)//(n_bar)-4)
+        for i,sv in enumerate(hist_scores):
+            frac    = sv/max(max_s,1)
+            is_last = (i==n_bar-1)
+            bx      = CHX0+B_PAD+i*(BAR_W+4)
+            by1     = CHY1-4
+            by0     = by1-max(6,int((CH_H-28)*frac))
+            # Semua bar dengan warna sama, hanya kecerahan berbeda
+            bar_col = ACC if is_last else _blend(CARD2,ACC,0.55)
+            bar_top = _lighten(bar_col,0.25)
+            for yi in range(by0,by1):
+                t2 = (yi-by0)/max(by1-by0,1)
+                draw.rectangle([(bx,yi),(bx+BAR_W,yi+1)],
+                               fill=_fill(_lerp(bar_top,bar_col,t2)))
+            draw.rounded_rectangle([(bx,by0),(bx+BAR_W,by1)],
+                                   radius=3, outline=_fill(_lighten(bar_col,0.15)), width=1)
+            # Glow hanya bar terakhir
+            if is_last:
+                for gl in range(3,0,-1):
+                    draw.rounded_rectangle([(bx-gl,by0-gl),(bx+BAR_W+gl,by1)],
+                                           radius=3+gl, outline=ACC+(int(35*gl/3),), width=1)
+            # Nilai di atas bar — selalu putih supaya tidak gelap
+            if frac>0.12:
+                label_sv = str(sv)
+                draw.text((bx+BAR_W//2,by0-7), label_sv,
+                          font=F["xs"], fill=_fill(WHITE if is_last else DIM2), anchor="mm")
+
+        draw.rectangle([(CHX0+B_PAD,CHY1-5),(CHX1-B_PAD,CHY1-4)], fill=_fill(BORDER2))
+
+        # ML Confidence bar
+        ML_Y  = CHY1+4
+        ML_H  = ML_BAR_H
+        conf_col = GREEN if ml_conf>=70 else (GOLD if ml_conf>=40 else MAGENTA)
+        draw.text((CHX0+10,ML_Y+7), "ML CONFIDENCE",
+                  font=F["xs"], fill=_fill(DIM))
+        draw.text((CHX1-10,ML_Y+7), f"{int(ml_conf)}%  |  {anomaly.title()}",
+                  font=F["xs"], fill=_fill(conf_col), anchor="rm")
+        CW0,CW1 = CHX0+10,CHX1-10
+        CY2 = ML_Y+24
+        draw.rounded_rectangle([(CW0,CY2),(CW1,CY2+8)], radius=4, fill=conf_col+(40,))
+        cx_end = CW0+int((CW1-CW0)*ml_conf/100)
+        if cx_end>CW0:
+            for xi in range(CW0,cx_end):
+                t4 = (xi-CW0)/(CW1-CW0)
+                draw.rectangle([(xi,CY2),(xi+1,CY2+8)],
+                               fill=_fill(_lerp(_lighten(conf_col,0.3),conf_col,t4)))
+
+        # ─────────────────────────────────────────────────────────────
+        # SECTION: Visualisasi Mini Grid + Quick Stats (full width)
+        # ─────────────────────────────────────────────────────────────
+        GRID_Y = BODY_Y+max(LEFT_H,RIGHT_H)+8
+        _card(PAD,GRID_Y,W-PAD*2,GRID_VIZ_H)
+        draw.text((PAD+12,GRID_Y+8), "\u25a6  VISUALISASI PUZZLE",
+                  font=F["xs"], fill=_fill(DIM))
+
+        GX0   = PAD+14; GY0 = GRID_Y+26
+        CELL_S= min(20, 200//N)
+        GW    = CELL_S*N; GH = CELL_S*N
+        GX1   = GX0+GW;   GY1 = GY0+GH
+
+        draw.rectangle([(GX0,GY0),(GX1,GY1)], fill=_fill(CARD2))
+        total_cells = N*N
+        filled_ratio = min(1.0, moves/(total_cells*1.5))
+        seeded = _rnd.Random(username+str(gs)+str(score))
+        for cr in range(N):
+            for cc in range(N):
+                roll = seeded.random()
+                if roll < filled_ratio*0.85:   cfill=_fill(_blend(CARD2,ACC,0.40))
+                elif roll < 0.92:              cfill=_fill(_blend(CARD2,GOLD,0.30))
+                else:                          cfill=_fill(CARD2)
+                cx2,cy2 = GX0+cc*CELL_S, GY0+cr*CELL_S
+                draw.rectangle([(cx2+1,cy2+1),(cx2+CELL_S-1,cy2+CELL_S-1)], fill=cfill)
+        for ci in range(N+1):
+            lw = 2 if ci%gs==0 else 1
+            lc = _fill(BORDER2 if ci%gs==0 else BORDER)
+            draw.line([(GX0+ci*CELL_S,GY0),(GX0+ci*CELL_S,GY1)], fill=lc, width=lw)
+            draw.line([(GX0,GY0+ci*CELL_S),(GX1,GY0+ci*CELL_S)], fill=lc, width=lw)
+
+        # Quick stats kanan grid — 2 kolom
+        QX = GX1+28; QY = GY0-2
+        qs_data = [
+            (f"\u25cf Near-miss: {near_miss}",    ORANGE),
+            (f"\u25cf Guessing:  {guessing}",     MAGENTA),
+            (f"\u25cf Sesi total: {total_sess}",  CYAN),
+            (f"\u25cf Moves/menit: {int(moves/(max(t_sec,1)/60)*10)/10}", PURPLE),
+        ]
+        for qi,(qtxt,qcol) in enumerate(qs_data):
+            col2i = qi%2; row2i = qi//2
+            qx2 = QX+col2i*180
+            qy2 = QY+row2i*22
+            draw.text((qx2,qy2), qtxt, font=F["xs"], fill=_fill(qcol))
+
+        # Legenda grid
+        LEG_X = QX; LEG_Y = QY+50
+        for lc2,ltxt in [(_blend(CARD2,ACC,0.40),"Sel terisi"),
+                          (_blend(CARD2,GOLD,0.30),"Angka awal"),
+                          (CARD2,"Kosong")]:
+            draw.rounded_rectangle([(LEG_X,LEG_Y),(LEG_X+12,LEG_Y+12)],
+                                   radius=2, fill=_fill(lc2), outline=_fill(BORDER2))
+            draw.text((LEG_X+18,LEG_Y+6), ltxt, font=F["xs"], fill=_fill(DIM2), anchor="lm")
+            LEG_X += 100
+
+        # ─────────────────────────────────────────────────────────────
+        # SECTION: ACHIEVEMENT — Dinamis (auto-expand)
+        # ─────────────────────────────────────────────────────────────
+        ACH_Y = GRID_Y+GRID_VIZ_H+8
+
+        if ach_list:
+            ach_card_h = 30+ach_rows*30+8
+            _card(PAD,ACH_Y,W-PAD*2,ach_card_h)
+
+            # Header row dengan counter
+            draw.text((PAD+12,ACH_Y+9), "\u2605  ACHIEVEMENT UNLOCKED",
+                      font=F["xs"], fill=_fill(GOLD))
+            draw.text((W-PAD-12,ACH_Y+9), f"{n_ach} badge",
+                      font=F["xs"], fill=_fill(DIM), anchor="rm")
+
+            # Grid badge: MAX_ACH_PER_ROW per baris, lebar otomatis
+            BADGE_PAD  = 10
+            avail_w    = W-PAD*2-BADGE_PAD*2
+            badge_w    = avail_w//MAX_ACH_PER_ROW - 6
+            badge_h    = 24
+
+            for ai,aid in enumerate(ach_list):
+                info  = ACHIEVEMENTS.get(aid, {"emoji":"\u2b50","nama":aid,"warna":"#FFD700"})
+                emoji = info.get("emoji","\u2b50")
+                nama  = info.get("nama", aid)[:14]   # truncate panjang
+                ac2   = _hex(info.get("warna","#FFD700"))
+                ac2_l = _lighten(ac2,0.35)
+
+                col_i = ai % MAX_ACH_PER_ROW
+                row_i = ai // MAX_ACH_PER_ROW
+                bx2   = PAD+BADGE_PAD+col_i*(badge_w+6)
+                by2   = ACH_Y+28+row_i*(badge_h+6)
+
+                draw.rounded_rectangle([(bx2,by2),(bx2+badge_w,by2+badge_h)],
+                                       radius=6, fill=ac2+(55,), outline=_fill(ac2_l), width=1)
+                badge_txt = f"{emoji} {nama}"
+                # Fit text
+                max_txt_w = badge_w-8
+                txt_w = draw.textlength(badge_txt, font=F["xs"])
+                if txt_w > max_txt_w:
+                    nama = nama[:int(len(nama)*max_txt_w/txt_w)-2]+"…"
+                    badge_txt = f"{emoji} {nama}"
+                draw.text((bx2+badge_w//2, by2+badge_h//2),
+                          badge_txt, font=F["xs"], fill=_fill(ac2_l), anchor="mm")
+            ACH_Y = ACH_Y+ach_card_h+8
+        else:
+            # Slot kosong dengan keterangan — siap untuk achievement masa depan
+            _card(PAD,ACH_Y,W-PAD*2,36,fill=CARD2)
+            draw.text((W//2,ACH_Y+18), "\u2605  Belum ada achievement — mainkan terus untuk membuka badge!",
+                      font=F["xs"], fill=_fill(DIM), anchor="mm")
+            ACH_Y = ACH_Y+44
+
+        # ─────────────────────────────────────────────────────────────
+        # SECTION: AI Insight
+        # ─────────────────────────────────────────────────────────────
+        AI_Y2 = ACH_Y
+        _card(PAD,AI_Y2,W-PAD*2,AI_H)
+        for yi in range(AI_H-2):
+            t5 = yi/(AI_H-2)
+            sc5 = _lerp(PURPLE,CYAN,t5)
+            draw.rectangle([(PAD+2,AI_Y2+1+yi),(PAD+6,AI_Y2+2+yi)], fill=_fill(sc5))
+        draw.text((PAD+14,AI_Y2+10), "\u2728  AI INSIGHT  \u2014  "+player_type,
+                  font=F["xs"], fill=_fill(_lighten(PURPLE,0.45)))
+        msg = (ai_message or "Terus berlatih dan raih skor terbaik!")[:240]
+        words = msg.split(); lines2,cur2 = [],""
+        for w in words:
+            test2 = cur2+(" " if cur2 else "")+w
+            if draw.textlength(test2,font=F["body"]) > W-PAD*2-28:
+                if cur2: lines2.append(cur2)
+                cur2 = w
+            else: cur2 = test2
+        if cur2: lines2.append(cur2)
+        for li,ln in enumerate(lines2[:3]):
+            draw.text((PAD+14,AI_Y2+26+li*20), ln, font=F["body"], fill=_fill(TXT))
+
+        # Predicted score
+        PRED_Y = AI_Y2+AI_H+6
+        if pred_sc is not None:
+            _card(PAD,PRED_Y,W-PAD*2,PRED_H,fill=_blend(CARD,PURPLE,0.18))
+            draw.rounded_rectangle([(PAD,PRED_Y),(W-PAD,PRED_Y+PRED_H)],
+                                   radius=11, outline=_fill(PURPLE), width=1)
+            draw.text((PAD+14,PRED_Y+PRED_H//2),
+                      "\u2197  Prediksi skor sesi berikutnya:",
+                      font=F["sm"], fill=_fill(DIM2), anchor="lm")
+            draw.text((W-PAD-14,PRED_Y+PRED_H//2), str(int(pred_sc)),
+                      font=F["h1"], fill=_fill(PURPLE), anchor="rm")
+            FOOT_START = PRED_Y+PRED_H+10
+        else:
+            FOOT_START = PRED_Y+4
+
+        # ─────────────────────────────────────────────────────────────
+        # FOOTER — crop canvas ke tinggi aktual
+        # ─────────────────────────────────────────────────────────────
+        FOOT_Y = FOOT_START
+        ACTUAL_H = FOOT_Y+FOOT_H
+
+        # Resize canvas ke tinggi aktual
+        img = img.crop((0,0,W,ACTUAL_H))
+        draw = _PilDraw.Draw(img)
+
+        # Wave divider
+        for x in range(W):
+            wy2 = int(2*_math.sin(x*_math.pi*3/W+0.8))
+            draw.rectangle([(x,FOOT_Y+wy2),(x+1,FOOT_Y+wy2+2)], fill=PURPLE+(70,))
+        draw.rectangle([(0,FOOT_Y+3),(W,FOOT_Y+4)], fill=_fill(BORDER))
+
+        # Footer BG gradient
+        for y in range(FOOT_Y+4,ACTUAL_H):
+            t6 = (y-FOOT_Y-4)/FOOT_H
+            draw.rectangle([(0,y),(W,y+1)],
+                           fill=_fill(_lerp(BG2,_darken(BG,0.25),t6)))
+
+        # AI box
+        QX2,QY2 = W-70,FOOT_Y+14
+        draw.rounded_rectangle([(QX2,QY2),(QX2+46,QY2+44)],
+                                radius=6, fill=_fill(CARD2), outline=_fill(ACC), width=1)
+        draw.text((QX2+23,QY2+22), "AI", font=F["h2"], fill=_fill(ACC), anchor="mm")
+
+        draw.text((PAD+4,FOOT_Y+18), "Sudoku AI", font=F["h2"], fill=_fill(TXT))
+        draw.text((PAD+4,FOOT_Y+42), "Powered by Machine Learning",
+                  font=F["xs"], fill=_fill(DIM))
+        date_str = _dt.datetime.now().strftime("%d %b %Y  %H:%M")
+        draw.text((QX2-14,FOOT_Y+50), date_str, font=F["xs"], fill=_fill(DIM), anchor="rm")
+
+        # Triple stripe bawah
+        draw.rectangle([(0,ACTUAL_H-8),(W//3,ACTUAL_H)],      fill=_fill(ACC))
+        draw.rectangle([(W//3,ACTUAL_H-8),(2*W//3,ACTUAL_H)], fill=_fill(PURPLE))
+        draw.rectangle([(2*W//3,ACTUAL_H-8),(W,ACTUAL_H)],    fill=_fill(GOLD))
+        draw.ellipse([(W//3-5,ACTUAL_H-13),(W//3+5,ACTUAL_H-3)],   fill=_fill(WHITE))
+        draw.ellipse([(2*W//3-5,ACTUAL_H-13),(2*W//3+5,ACTUAL_H-3)], fill=_fill(WHITE))
+
+        # ── Simpan ───────────────────────────────────────────────────
+        # Convert RGBA → RGB untuk PNG tanpa alpha (lebih kecil)
+        final = _PilImage.new("RGB",(W,ACTUAL_H), BG)
+        final.paste(img.convert("RGB"), (0,0))
+
+        ts    = int(time.time())
+        fname = f"SudokuAI_{username}_{ts}.png"
+        for folder in [
+            os.path.join(os.path.expanduser("~"),"Desktop"),
+            os.path.join(os.path.expanduser("~"),"Downloads"),
+            os.path.expanduser("~"),
+        ]:
+            if os.path.isdir(folder):
+                path = os.path.join(folder,fname)
+                final.save(path,"PNG")
+                return path
+
+    except Exception as e:
+        print("Score card error:", e)
+        import traceback; traceback.print_exc()
+    return None
+
+
 def _patched_on_finish(self, session, ml):
-    self._clear()
-    dashboard_session = _ml_dashboard_session(session, ml)
-    # Simpan rebuild_fn agar ganti tema tetap menampilkan dashboard, bukan game
-    self._rebuild_fn = lambda: _patched_on_finish(self, session, ml)
-    self.screen = PerformanceDashboard(self.root, self, self.username, dashboard_session, ml)
-    self.root.after(50, self._raise_overlay)
+    no_activity = (
+        session.get("moves", 0) == 0 and
+        session.get("total_time", 0) < 5
+    )
+    if no_activity:
+        self._back_to_grid_select()
+        return
+
+    def _show_dashboard():
+        self._clear()
+        dashboard_session = _ml_dashboard_session(session, ml)
+        self._rebuild_fn = lambda: _patched_on_finish(self, session, ml)
+        self.screen = PerformanceDashboard(
+            self.root, self, self.username, dashboard_session, ml)
+        self.root.after(50, self._raise_overlay)
+
+    # Evaluasi achievement setelah sesi selesai
+    data         = load_data()
+    all_sessions = data["players"].get(self.username, {}).get("sessions", [])
+    earned_ids   = _evaluate_achievements(self.username, session, all_sessions)
+    earned_badges = [ACHIEVEMENTS[i] for i in earned_ids if i in ACHIEVEMENTS]
+
+    if earned_badges:
+        # Popup achievement sebelum dashboard
+        self._clear()
+        self.screen = AchievementPopup(self.root, earned_badges, on_done=_show_dashboard)
+        self.root.after(50, self._raise_overlay)
+    else:
+        _show_dashboard()
 
 
 SudokuApp._on_finish = _patched_on_finish

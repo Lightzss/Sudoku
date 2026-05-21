@@ -3,10 +3,10 @@
 <!-- HEADER BANNER -->
 <img src="logo.png" alt="Sudoku AI Logo" width="96" height="96" />
 
-# 🧩 Sudoku AI — ML Intelligence System
+# 🧩 Sudoku AI - ML Intelligence System
 
 > **Game Sudoku berbasis Python** dengan kecerdasan buatan terintegrasi.  
-> Dari klasifikasi tipe pemain, prediksi skor, hingga deteksi anomali — semua berjalan secara _real-time_ langsung di dalam game.
+> Dari klasifikasi tipe pemain, prediksi skor, hingga deteksi anomali - semua berjalan secara _real-time_ langsung di dalam game.
 
 <br/>
 
@@ -41,7 +41,7 @@
 
 ## 🎯 Tentang Proyek
 
-**Sudoku AI** bukan sekadar game Sudoku biasa. Di balik tampilan yang bersih dan responsif, terdapat sebuah **sistem Machine Learning** yang terus belajar dari pola bermainmu — mengenali tipe pemainmu, memprediksi performa berikutnya, merekomendasikan tingkat kesulitan yang tepat, bahkan mendeteksi kalau sesimu terasa "tidak biasa".
+**Sudoku AI** bukan sekadar game Sudoku biasa. Di balik tampilan yang bersih dan responsif, terdapat sebuah **sistem Machine Learning** yang terus belajar dari pola bermainmu - mengenali tipe pemainmu, memprediksi performa berikutnya, merekomendasikan tingkat kesulitan yang tepat, bahkan mendeteksi kalau sesimu terasa "tidak biasa".
 
 Proyek ini dibangun sepenuhnya dengan Python, menggunakan `tkinter` sebagai antarmuka grafis dan `scikit-learn` sebagai fondasi model ML-nya. Seluruh logika mulai dari generasi puzzle, solver AI, hingga pipeline ML berjalan dalam **satu file Python tunggal** sepanjang hampir 10.000 baris.
 
@@ -53,12 +53,12 @@ Proyek ini dibangun sepenuhnya dengan Python, menggunakan `tkinter` sebagai anta
 
 - **Dua ukuran grid:** 4×4 (kotak 2×2) dan 9×9 (kotak 3×3)
 - **Tiga tingkat kesulitan:**
-  - 🍃 **Easy** — 35% sel dihapus, palet hijau tosca
-  - ⚡ **Normal** — 50% sel dihapus, palet biru safir
-  - 🔥 **Hard** — 65% sel dihapus, palet merah coral
+  - 🍃 **Easy** - 35% sel dihapus, palet hijau tosca
+  - ⚡ **Normal** - 50% sel dihapus, palet biru safir
+  - 🔥 **Hard** - 65% sel dihapus, palet merah coral
 - **Highlight pintar:** baris, kolom, dan kotak yang berkaitan dengan sel terpilih langsung diwarnai secara adaptif sesuai tema
 - **Auto-fill kandidat:** opsi isi kandidat otomatis (draft mode) khusus Hard
-- **Sistem skor yang adil:** skor dihitung berdasarkan kecepatan _per sel yang dikerjakan sendiri_, bukan total waktu — hint dan auto-fill langsung memotong skor
+- **Sistem skor yang adil:** skor dihitung berdasarkan kecepatan _per sel yang dikerjakan sendiri_, bukan total waktu - hint dan auto-fill langsung memotong skor
 
 ### 🤖 AI Demo (Attractor Screen)
 
@@ -75,15 +75,15 @@ Proyek ini dibangun sepenuhnya dengan Python, menggunakan `tkinter` sebagai anta
 ### 📊 Performance Dashboard
 
 - Dashboard lengkap yang muncul setiap kali selesai bermain, menampilkan:
-  - **Grafik tren performa** interaktif (Matplotlib) — pilih metrik: skor, waktu, error, hint, atau auto
+  - **Grafik tren performa** interaktif (Matplotlib) - pilih metrik: skor, waktu, error, hint, atau auto
   - **Tipe pemain** hasil klasifikasi KNN beserta confidence %
   - **Rekomendasi AI:** grid dan tingkat kesulitan berikutnya
   - **Insight AI** berupa analisis tekstual singkat dari pola bermainmu
-  - **Score Card eksportable** — PNG bergaya kartu dengan gradient dan statistik lengkap
+  - **Score Card eksportable** - PNG bergaya kartu dengan gradient dan statistik lengkap
 
 ### 🎵 Audio & Efek Suara
 
-- Background music (MP3 looping) via `pygame.mixer` — toggle dengan tombol `M` atau ikon di pojok kanan bawah
+- Background music (MP3 looping) via `pygame.mixer` - toggle dengan tombol `M` atau ikon di pojok kanan bawah
 - **SFX generatif** dihasilkan secara programatis menggunakan NumPy (tanpa file audio eksternal):
   - ✅ Sine wave 880 Hz untuk input benar
   - ❌ Sawtooth + noise 200 Hz untuk input salah
@@ -100,7 +100,7 @@ Proyek ini dibangun sepenuhnya dengan Python, menggunakan `tkinter` sebagai anta
 - Profil pemain tersimpan per-username di `sudoku_data.json`
 - Layar **Ganti Pemain** dua panel: daftar pemain di kiri, detail profil + riwayat sesi di kanan
 - **Leaderboard global** dengan filter grid dan kesulitan, ditampilkan sebagai tabel scrollable
-- **Kiosk Mode:** tekan `F5` atau `Ctrl+Shift+R` untuk reset cepat tanpa dialog — cocok untuk instalasi pameran
+- **Kiosk Mode:** tekan `F5` atau `Ctrl+Shift+R` untuk reset cepat tanpa dialog - cocok untuk instalasi pameran
 
 ---
 
@@ -178,23 +178,23 @@ KNN mengklasifikasikan pemain ke dalam 5 tipe berdasarkan 6 fitur rata-rata:
 ```
 SudokuApp (root controller)
 │
-├── LoginScreen            — Input username, idle → Attractor
-├── AttractorScreen        — Demo AI solver + statistik global
-├── PlayerSelectScreen     — Daftar pemain + detail profil (2 panel)
-├── GridSizeScreen         — Pilih 4×4 atau 9×9
-├── DifficultyScreen       — Pilih Easy / Normal / Hard
-├── GameScreen             — Layar utama bermain
-│   ├── Board (Canvas)     — Grid interaktif + highlight
-│   ├── Numpad             — Tombol angka 1–9 (atau 1–4)
-│   ├── Sidebar            — Timer, skor, hint, error counter
-│   └── ML Panel (toggle) — Insight real-time dari semua model
-├── PerformanceDashboard   — Statistik sesi + chart + rekomendasi
-├── LeaderboardWindow      — Top pemain per grid & kesulitan
-├── AchievementPopup       — Animasi badge baru yang diraih
-└── TutorialOverlay        — Panduan singkat cara bermain
+├── LoginScreen            - Input username, idle → Attractor
+├── AttractorScreen        - Demo AI solver + statistik global
+├── PlayerSelectScreen     - Daftar pemain + detail profil (2 panel)
+├── GridSizeScreen         - Pilih 4×4 atau 9×9
+├── DifficultyScreen       - Pilih Easy / Normal / Hard
+├── GameScreen             - Layar utama bermain
+│   ├── Board (Canvas)     - Grid interaktif + highlight
+│   ├── Numpad             - Tombol angka 1–9 (atau 1–4)
+│   ├── Sidebar            - Timer, skor, hint, error counter
+│   └── ML Panel (toggle) - Insight real-time dari semua model
+├── PerformanceDashboard   - Statistik sesi + chart + rekomendasi
+├── LeaderboardWindow      - Top pemain per grid & kesulitan
+├── AchievementPopup       - Animasi badge baru yang diraih
+└── TutorialOverlay        - Panduan singkat cara bermain
 ```
 
-Setiap layar adalah subkelas `tk.Frame` yang ditempatkan via `.place()` di atas `root`. Pergantian layar dilakukan dengan `_clear()` + inisialisasi layar baru — state tema dipertahankan lewat `_rebuild_fn`.
+Setiap layar adalah subkelas `tk.Frame` yang ditempatkan via `.place()` di atas `root`. Pergantian layar dilakukan dengan `_clear()` + inisialisasi layar baru - state tema dipertahankan lewat `_rebuild_fn`.
 
 ---
 
@@ -203,7 +203,7 @@ Setiap layar adalah subkelas `tk.Frame` yang ditempatkan via `.place()` di atas 
 ```
 sudoku-ai/
 │
-├── Sudoku.py                    # File utama — seluruh logika ada di sini
+├── Sudoku.py                    # File utama - seluruh logika ada di sini
 ├── sudoku_data.json             # Data pemain (dibuat otomatis saat pertama kali dijalankan)
 ├── sudoku_music.mp3             # Background music (opsional)
 ├── logo.png                     # Ikon aplikasi (opsional)
@@ -236,7 +236,7 @@ sudoku-ai/
 | Pillow (PIL) | 8.0+ _(opsional, untuk ekspor Score Card)_ |
 | pygame | 2.0+ _(opsional, untuk musik dan SFX)_ |
 
-Aplikasi tetap berjalan penuh meskipun `scikit-learn`, `Pillow`, atau `pygame` tidak terinstal — masing-masing modul memiliki fallback graceful.
+Aplikasi tetap berjalan penuh meskipun `scikit-learn`, `Pillow`, atau `pygame` tidak terinstal - masing-masing modul memiliki fallback graceful.
 
 ---
 
@@ -298,7 +298,7 @@ sudoku-ai/
 
 ## 📦 File Model ML
 
-Model `*.pkl` dapat dihasilkan dari **notebook Jupyter** yang disertakan, atau dibiarkan kosong — aplikasi akan melatih model dari data sintetis bawaan dan memperbaruinya seiring data pemain bertambah.
+Model `*.pkl` dapat dihasilkan dari **notebook Jupyter** yang disertakan, atau dibiarkan kosong - aplikasi akan melatih model dari data sintetis bawaan dan memperbaruinya seiring data pemain bertambah.
 
 | File | Notebook Sumber | Keterangan |
 |---|---|---|
@@ -307,7 +307,7 @@ Model `*.pkl` dapat dihasilkan dari **notebook Jupyter** yang disertakan, atau d
 | `ISO.pkl` | `Model_Isolation_Forest.ipynb` | Deteksi anomali + threshold optimal |
 | `GBM.pkl` | `Model_GBM.ipynb` | Rekomendasi kesulitan |
 | `Multioutput_regressor_GBM.pkl` | `Model_Multioutput_Regressor.ipynb` | Profil skill |
-| `HintTimer_RFR.pkl` | — | Dilatih otomatis oleh aplikasi |
+| `HintTimer_RFR.pkl` | - | Dilatih otomatis oleh aplikasi |
 
 Jika file PKL belum ada, aplikasi tetap berfungsi dengan model yang dilatih dari data sintetis 20 sampel bawaan, dan secara otomatis meningkat kualitasnya seiring sesi pemain bertambah.
 
@@ -315,10 +315,10 @@ Jika file PKL belum ada, aplikasi tetap berfungsi dengan model yang dilatih dari
 
 ## 🕹️ Cara Bermain
 
-1. **Login** — masukkan nama pemain (baru atau yang sudah ada)
-2. **Pilih Grid** — 4×4 untuk pemula, 9×9 untuk tantangan
-3. **Pilih Kesulitan** — Easy, Normal, atau Hard
-4. **Bermain** — klik sel, lalu klik angka di numpad atau tekan angka di keyboard
+1. **Login** - masukkan nama pemain (baru atau yang sudah ada)
+2. **Pilih Grid** - 4×4 untuk pemula, 9×9 untuk tantangan
+3. **Pilih Kesulitan** - Easy, Normal, atau Hard
+4. **Bermain** - klik sel, lalu klik angka di numpad atau tekan angka di keyboard
 5. **Shortcut Berguna:**
 
 | Tombol | Fungsi |
@@ -330,8 +330,8 @@ Jika file PKL belum ada, aplikasi tetap berfungsi dengan model yang dilatih dari
 | `F5` / `Ctrl+Shift+R` | Reset cepat (Kiosk Mode) |
 | `Esc` | Kembali ke layar sebelumnya |
 
-6. **Setelah selesai** — dashboard performa tampil otomatis, badge baru (jika ada) muncul sebelumnya
-7. **Ekspor Score Card** — tekan tombol di dashboard untuk menyimpan kartu PNG ke folder `Card/`
+6. **Setelah selesai** - dashboard performa tampil otomatis, badge baru (jika ada) muncul sebelumnya
+7. **Ekspor Score Card** - tekan tombol di dashboard untuk menyimpan kartu PNG ke folder `Card/`
 
 ---
 
@@ -339,14 +339,14 @@ Jika file PKL belum ada, aplikasi tetap berfungsi dengan model yang dilatih dari
 
 Terdapat **22 badge** yang terbagi dalam 6 tier. Setiap badge hanya diberikan sekali per pemain.
 
-### Tier 1 — First Steps
+### Tier 1 - First Steps
 | Badge | Kondisi |
 |---|---|
 | 🟢 **First Win** | Selesaikan puzzle pertama |
 | 🟠 **Marathon** | Selesaikan 10 sesi total |
 | 🩷 **Veteran** | Selesaikan 25 sesi total |
 
-### Tier 2 — Streak & Konsistensi
+### Tier 2 - Streak & Konsistensi
 | Badge | Kondisi |
 |---|---|
 | ❤️ **Consistent** | 3 sesi berturut-turut selesai |
@@ -354,14 +354,14 @@ Terdapat **22 badge** yang terbagi dalam 6 tier. Setiap badge hanya diberikan se
 | 🩷 **Serial Winner** | 7 sesi berturut-turut selesai |
 | 🟠 **Comeback** | Selesai setelah sesi sebelumnya gagal |
 
-### Tier 3 — Kecepatan
+### Tier 3 - Kecepatan
 | Badge | Kondisi |
 |---|---|
 | 🥇 **Lightning** | 4×4 selesai di bawah 60 detik |
 | 🥇 **Speed Flash** | 4×4 selesai di bawah 30 detik |
 | 🔵 **Speed Demon** | 9×9 selesai di bawah 5 menit |
 
-### Tier 4 — Akurasi & Kemandirian
+### Tier 4 - Akurasi & Kemandirian
 | Badge | Kondisi |
 |---|---|
 | 🔵 **No Hints** | Selesai tanpa satu pun hint |
@@ -369,7 +369,7 @@ Terdapat **22 badge** yang terbagi dalam 6 tier. Setiap badge hanya diberikan se
 | 🥇 **Perfect** | Selesai tanpa error DAN tanpa hint |
 | 🟢 **Efficient** | Selesai dengan kurang dari 3 error |
 
-### Tier 5 — Kesulitan & Grid
+### Tier 5 - Kesulitan & Grid
 | Badge | Kondisi |
 |---|---|
 | ❤️ **Hard Expert** | Selesaikan puzzle Hard |
@@ -377,7 +377,7 @@ Terdapat **22 badge** yang terbagi dalam 6 tier. Setiap badge hanya diberikan se
 | 🟣 **Master 9×9** | Selesaikan puzzle 9×9 |
 | 🔵 **Explorer** | Mainkan semua 3 tingkat kesulitan |
 
-### Tier 6 — Skor
+### Tier 6 - Skor
 | Badge | Kondisi |
 |---|---|
 | 🥇 **Genius** | Raih skor > 800 dalam satu sesi |
@@ -387,15 +387,15 @@ Terdapat **22 badge** yang terbagi dalam 6 tier. Setiap badge hanya diberikan se
 
 ## 🏗️ Detail Teknis Menarik
 
-**Atomic Write** — data JSON dan file PKL tidak pernah terkorupsi saat crash. Write dilakukan ke file `.tmp` terlebih dahulu, baru `os.replace()` secara atomik ke file asli.
+**Atomic Write** - data JSON dan file PKL tidak pernah terkorupsi saat crash. Write dilakukan ke file `.tmp` terlebih dahulu, baru `os.replace()` secara atomik ke file asli.
 
-**PKL Cache RAM** — semua model di-load dari disk hanya sekali per sesi. Akses berikutnya langsung dari `_PKL_CACHE` dictionary di memori (~0ms).
+**PKL Cache RAM** - semua model di-load dari disk hanya sekali per sesi. Akses berikutnya langsung dari `_PKL_CACHE` dictionary di memori (~0ms).
 
-**Thread Safety** — retrain model berjalan di background thread dengan `threading.Lock`. Tidak ada dua retrain yang berjalan bersamaan, dan hasil dikembalikan ke main thread via `root.after(0, callback)`.
+**Thread Safety** - retrain model berjalan di background thread dengan `threading.Lock`. Tidak ada dua retrain yang berjalan bersamaan, dan hasil dikembalikan ke main thread via `root.after(0, callback)`.
 
-**Deduplication Sesi** — setiap sesi memiliki _fingerprint_ unik dari 11 field. Sesi duplikat (misalnya akibat crash atau double-save) dibuang secara otomatis.
+**Deduplication Sesi** - setiap sesi memiliki _fingerprint_ unik dari 11 field. Sesi duplikat (misalnya akibat crash atau double-save) dibuang secara otomatis.
 
-**MRV Solver** — solver AI menggunakan **Minimum Remaining Values** heuristic: pilih sel dengan kandidat paling sedikit terlebih dahulu. Jauh lebih efisien dari backtracking biasa karena deteksi kegagalan lebih awal dan search tree lebih kecil.
+**MRV Solver** - solver AI menggunakan **Minimum Remaining Values** heuristic: pilih sel dengan kandidat paling sedikit terlebih dahulu. Jauh lebih efisien dari backtracking biasa karena deteksi kegagalan lebih awal dan search tree lebih kecil.
 
 ---
 

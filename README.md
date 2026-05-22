@@ -54,7 +54,7 @@ Proyek ini dikembangkan untuk keperluan **Pameran**, **HAKI**, dan **Penilaian T
 
 ### Multi-Pemain
 - Mendukung banyak akun pemain dalam satu perangkat
-- Data setiap pemain tersimpan terpisah dalam `sudoku_data.json`
+- Data setiap pemain tersimpan terpisah dalam `player_data.json`
 
 ---
 
@@ -183,7 +183,7 @@ Semua retrain dilindungi dengan `threading.Lock` untuk mencegah kondisi race. Mo
 ```
 PROJECT_UAS/
 ├── Sudoku.py                          # Entry point — game & ML runtime
-├── sudoku_data.json                   # Data sesi & profil semua pemain (auto-generated)
+├── player_data.json                   # Data sesi & profil semua pemain (auto-generated)
 │
 ├── Assets/
 │   ├── logo.png                       # Logo aplikasi (header & icon)
@@ -304,7 +304,7 @@ Achievement dievaluasi otomatis setelah setiap sesi selesai dan ditampilkan mela
 
 ## 9. Format Data Pemain
 
-Semua data pemain disimpan di `sudoku_data.json` dengan format berikut:
+Semua data pemain disimpan di `player_data.json` dengan format berikut:
 
 ```json
 {

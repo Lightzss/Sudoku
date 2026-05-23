@@ -1,6 +1,4 @@
-# =====================================================
 # IMPORTS — semua library disatukan di sini
-# =====================================================
 import tkinter as tk
 from tkinter import messagebox
 import random
@@ -25,13 +23,13 @@ def _ml_schedule_retrain(ml_instance):
         if not _ml_retrain_lock.acquire(blocking=False):
             return  # sudah ada retrain berjalan, lewati
         try:
-            # 1. Retrain base models (KNN, RFR, IsolationForest)
+            # 1. Retrain base models (KNN, HistGBR, IsolationForest)
             ml_instance._models_dirty = True
             ml_instance._train_models()
-            # 2. Retrain GBM (difficulty) + Multi (stats) dengan data terbaru dari semua pemain
+            # 2. Retrain RFC (difficulty) + Multioutput+HistGBR (stats) dengan data terbaru dari semua pemain
             ml_instance._ml_dirty = True
             ml_instance._train_ml_models(force=True)
-            # 3. Retrain hint timer RFR dengan ritme gerakan terbaru
+            # 3. Retrain hint timer GBR dengan ritme gerakan terbaru
             ml_instance._train_hint_model()
         except Exception:
             pass
@@ -47,22 +45,150 @@ except ImportError:
     PYGAME_AVAILABLE = False
 
 
-# ── PIL (Score Card PNG) ──────────────────────────────
+# ── PIL (Score Card PNG + Blur Overlay) ───────────────
 try:
-    from PIL import Image as _PilImage, ImageDraw as _PilDraw, ImageFont as _PilFont
+    from PIL import (Image as _PilImage, ImageDraw as _PilDraw,
+                     ImageFont as _PilFont, ImageFilter as _PilFilter,
+                     ImageEnhance as _PilEnhance, ImageGrab as _PilGrab,
+                     ImageTk as _PilImageTk)
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
 
+
+# ── Blur-overlay helper ────────────────────────────────────────────────────────
+def _grab_blur_bg(root, radius: int = 14, darken: float = 0.38):
+    """
+    Ambil screenshot jendela saat ini, blur + gelap-kan, kembalikan PhotoImage.
+    Dipanggil SEBELUM overlay ditampilkan agar hasilnya bersih (tanpa overlay).
+
+    STRATEGI DPI-PROOF (mengatasi semua skenario Windows DPI):
+    - Grab SELURUH layar dulu (tanpa bbox) — PIL selalu menggunakan physical
+      pixels di sini, tidak peduli DPI-awareness proses.
+    - Hitung scale EMPIRIS dari rasio: PIL_screen_size / tkinter_screen_size.
+      Ini bekerja baik saat proses DPI-aware maupun DPI-unaware karena kita
+      mengukur langsung dari data nyata, bukan dari API yang bisa berbohong.
+    - Crop area jendela dengan koordinat yang sudah di-scale ke physical pixels.
+    - Resize crop ke logical size agar pas tepat di tkinter canvas.
+    - Return None jika PIL / ImageGrab tidak tersedia atau gagal.
+    """
+    if not PIL_AVAILABLE:
+        return None
+    try:
+        root.update_idletasks()
+        # Koordinat & ukuran jendela dalam LOGICAL pixels (tkinter)
+        x = root.winfo_rootx()
+        y = root.winfo_rooty()
+        w = root.winfo_width()
+        h = root.winfo_height()
+        if w < 10 or h < 10:
+            return None
+
+        # Grab seluruh layar — PIL selalu mengembalikan physical pixels
+        full = _PilGrab.grab()
+        phys_w, phys_h = full.size
+
+        # Ukuran layar logis dari tkinter
+        logi_w = root.winfo_screenwidth()
+        logi_h = root.winfo_screenheight()
+
+        # Scale empiris: physical / logical
+        # Jika proses DPI-unaware: Windows sudah memvirtualisasi sehingga
+        #   logi_w == phys_w dan scale == 1.0 (benar, tidak ada koreksi).
+        # Jika proses DPI-aware: logi_w < phys_w dan scale > 1.0 (koreksi aktif).
+        sx = phys_w / logi_w if logi_w > 0 else 1.0
+        sy = phys_h / logi_h if logi_h > 0 else 1.0
+
+        # Konversi koordinat jendela dari logical ke physical untuk crop
+        cx  = int(round(x * sx))
+        cy  = int(round(y * sy))
+        cx2 = int(round((x + w) * sx))
+        cy2 = int(round((y + h) * sy))
+
+        # Pastikan crop tidak keluar dari batas layar fisik
+        cx  = max(0, min(cx,  phys_w))
+        cy  = max(0, min(cy,  phys_h))
+        cx2 = max(0, min(cx2, phys_w))
+        cy2 = max(0, min(cy2, phys_h))
+
+        img = full.crop((cx, cy, cx2, cy2))
+
+        # Resize ke logical size agar pas tepat dengan tkinter canvas
+        if img.size != (w, h):
+            img = img.resize((w, h), _PilImage.LANCZOS)
+
+        img = img.filter(_PilFilter.GaussianBlur(radius=radius))
+        img = _PilEnhance.Brightness(img).enhance(darken)
+        return _PilImageTk.PhotoImage(img)
+    except Exception:
+        return None
+
+
+def _place_blur_canvas(parent, root, radius: int = 14, darken: float = 0.38,
+                       pre_captured=None):
+    """
+    Pasang background blur ke `parent`.
+    - `pre_captured`: PhotoImage yang sudah ditangkap sebelumnya (untuk kasus
+      di mana screen sudah di-clear sebelum popup muncul, misal AchievementPopup).
+    - Gunakan tk.Label sebagai display widget agar tidak ada masalah koordinat.
+    - Fallback: frame gelap polos jika PIL tidak tersedia.
+    """
+    photo = pre_captured if pre_captured is not None else \
+            _grab_blur_bg(root, radius=radius, darken=darken)
+
+    if photo:
+        lbl = tk.Label(parent, image=photo, bd=0, highlightthickness=0)
+        lbl._blur_photo_ref = photo          # cegah garbage-collection
+        lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+        return lbl
+    else:
+        # Fallback: frame polos semi-gelap
+        is_dark = (_CURRENT_THEME_NAME == "dark")
+        fb = tk.Frame(parent, bg="#050810" if is_dark else "#8090A8")
+        fb.place(relx=0, rely=0, relwidth=1, relheight=1)
+        return fb
+
+
+def _corner_icons_lower():
+    """Turunkan icon pojok (theme+music) di bawah overlay yang sedang tampil."""
+    try:
+        app = _APP_INSTANCE
+        if app is None:
+            return
+        try: app._theme_btn.lower()
+        except Exception: pass
+        try: app._music_btn.lower()
+        except Exception: pass
+        app._corner_overlay_paused = True
+    except Exception:
+        pass
+
+
+def _corner_icons_restore():
+    """Kembalikan icon pojok ke posisi teratas setelah popup ditutup."""
+    try:
+        app = _APP_INSTANCE
+        if app is None:
+            return
+        app._corner_overlay_paused = False
+        app._raise_overlay()
+    except Exception:
+        pass
+
 # =====================================================
 # SOUND EFFECTS ENGINE
 # =====================================================
-_SFX_CORRECT = None
-_SFX_ERROR   = None
-_SFX_WIN     = None
+_SFX_CORRECT     = None
+_SFX_ERROR       = None
+_SFX_WIN         = None
+_SFX_ACHIEVEMENT = None   # fanfare badge unlock
+_SFX_SELECT      = None   # pilih grid / difficulty — konfirmasi tegas
+_SFX_HOVER       = None   # hover kartu — tick lembut
+_SFX_CLICK       = None   # tombol navigasi / sekunder — klik netral
 
 def _build_sfx():
-    global _SFX_CORRECT, _SFX_ERROR, _SFX_WIN
+    global _SFX_CORRECT, _SFX_ERROR, _SFX_WIN, _SFX_ACHIEVEMENT, \
+           _SFX_SELECT, _SFX_HOVER, _SFX_CLICK
     if not PYGAME_AVAILABLE:
         return
     try:
@@ -88,6 +214,47 @@ def _build_sfx():
             env = _np.exp(-t * 6)
             chunks.append((_np.sin(2*_np.pi*freq*t)*0.5 + _np.sin(2*_np.pi*freq*2*t)*0.2)*env*0.6)
         _SFX_WIN = _make_sound(_np.concatenate(chunks))
+        # SFX 4: achievement unlock — glissando naik + shimmer (300 ms)
+        # G4 → B4 → D5 → G5, tiap 60 ms, dengan overtone shimmer
+        ach_chunks = []
+        for freq in [392.00, 493.88, 587.33, 783.99]:
+            t_a = _np.linspace(0, 0.06, int(SR * 0.06), endpoint=False)
+            env_a = _np.exp(-t_a * 10)
+            wave  = (_np.sin(2*_np.pi*freq*t_a) * 0.55
+                   + _np.sin(2*_np.pi*freq*2*t_a) * 0.20
+                   + _np.sin(2*_np.pi*freq*3*t_a) * 0.08) * env_a
+            ach_chunks.append(wave)
+        # Tambah shimmer note terakhir lebih panjang (120 ms)
+        t_s = _np.linspace(0, 0.12, int(SR * 0.12), endpoint=False)
+        env_s = _np.exp(-t_s * 5)
+        shimmer = (_np.sin(2*_np.pi*1046.5*t_s)    * 0.45
+                 + _np.sin(2*_np.pi*1318.5*t_s)    * 0.25
+                 + _np.sin(2*_np.pi*1567.98*t_s)   * 0.15) * env_s
+        ach_chunks.append(shimmer)
+        _SFX_ACHIEVEMENT = _make_sound(_np.concatenate(ach_chunks) * 0.7)
+        # SFX 5: select/confirm — double-ding naik (C5→E5, tiap 60ms, 120ms total)
+        # Dipakai saat memilih grid size atau difficulty
+        sel_chunks = []
+        for freq in [523.25, 659.25]:   # C5 → E5
+            t_sel = _np.linspace(0, 0.06, int(SR * 0.06), endpoint=False)
+            env_sel = _np.exp(-t_sel * 18)
+            wave_sel = (_np.sin(2 * _np.pi * freq * t_sel) * 0.55
+                      + _np.sin(2 * _np.pi * freq * 2 * t_sel) * 0.18) * env_sel
+            sel_chunks.append(wave_sel)
+        _SFX_SELECT = _make_sound(_np.concatenate(sel_chunks) * 0.75)
+        # SFX 6: hover tick — sine pendek sangat halus (1200 Hz, 28ms, volume rendah)
+        # Dipakai saat kursor masuk ke atas kartu grid / difficulty
+        t_hov = _np.linspace(0, 0.028, int(SR * 0.028), endpoint=False)
+        env_hov = _np.exp(-t_hov * 120)
+        _SFX_HOVER = _make_sound(
+            _np.sin(2 * _np.pi * 1200 * t_hov) * env_hov * 0.18)
+        # SFX 7: click netral — "pock" tegas untuk tombol navigasi/sekunder
+        # Sine 440 Hz (A4), 55 ms, decay cepat — terdengar natural & tidak mengganggu
+        t_clk = _np.linspace(0, 0.055, int(SR * 0.055), endpoint=False)
+        env_clk = _np.exp(-t_clk * 55)
+        _SFX_CLICK = _make_sound(
+            (_np.sin(2 * _np.pi * 440 * t_clk) * 0.5
+           + _np.sin(2 * _np.pi * 880 * t_clk) * 0.12) * env_clk * 0.65)
     except Exception:
         pass
 
@@ -225,7 +392,9 @@ def _evaluate_achievements(username, session, all_sessions):
 # ── MACHINE LEARNING ─────────────────────────────────────────────────────────
 try:
     from sklearn.neighbors import KNeighborsClassifier
-    from sklearn.ensemble import IsolationForest, RandomForestClassifier, RandomForestRegressor 
+    from sklearn.ensemble import (IsolationForest, RandomForestClassifier,
+                                  RandomForestRegressor,
+                                  HistGradientBoostingRegressor)
     from sklearn.multioutput import MultiOutputRegressor
     from sklearn.preprocessing import StandardScaler
     SKLEARN_AVAILABLE = True
@@ -237,12 +406,12 @@ except ImportError:
 # =====================================================
 
 # ── Nama file model pkl ───────────────────────────────────────────────────────
-PKL_KNN   = "KNN.pkl"                      # KNeighborsClassifier + StandardScaler  (notebook: Model_KNN)
-PKL_RFR   = "RFR.pkl"                      # RandomForestRegressor, prediksi skor berikutnya — tanpa scaler (notebook: Model_Random_Forest_Regressor)
-PKL_ISO   = "ISO.pkl"                      # IsolationForest + StandardScaler  (notebook: Model_Isolation_Forest)
-PKL_GBM   = "GBM.pkl"                     # RFC/GBM classifier, rekomendasi difficulty (notebook: Model_GBM)
-PKL_MULTI = "Multioutput_regressor_GBM.pkl"  # MultiOutputRegressor + StandardScaler  (notebook: Model_Multioutput_Regressor)
-PKL_HINT_RFR = "HintTimer_RFR.pkl"  # Mini-RFR untuk prediksi idle threshold hint
+PKL_CLF     = "Player_Classifier.pkl"        # KNeighborsClassifier + StandardScaler  (notebook: Model_KNN)
+PKL_SCORE   = "Score_Prediction.pkl"         # HistGradientBoostingRegressor, prediksi skor sesi berikutnya (notebook: Model_Score_Prediction)
+PKL_ANO     = "Detect_Anomaly.pkl"           # IsolationForest + StandardScaler  (notebook: Model_Isolation_Forest)
+PKL_DIFF    = "Difficulty_Recommender.pkl"   # RandomForestClassifier, rekomendasi difficulty (notebook: Model_Difficulty_Recommender)
+PKL_PERFORM = "Performance_Prediction.pkl"   # MultiOutputRegressor + HistGradientBoostingRegressor + StandardScaler  (notebook: Model_Performance_Prediction)
+PKL_HINT    = "Hint_Timer.pkl"               # GradientBoostingRegressor, prediksi waktu hint berikutnya (notebook: Model_Hint_Timer)
 
 # ── ASSETS FOLDER ────────────────────────────────────────────────────────────
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Assets")
@@ -322,7 +491,7 @@ def _load_pkl(name: str):
     return None
 
 def _warmup_pkl_cache():
-    for name in (PKL_KNN, PKL_RFR, PKL_ISO, PKL_GBM, PKL_MULTI, PKL_HINT_RFR):
+    for name in (PKL_CLF, PKL_SCORE, PKL_ANO, PKL_DIFF, PKL_PERFORM, PKL_HINT):
         try:
             _load_pkl(name)
         except Exception:
@@ -998,12 +1167,13 @@ class PlayerMLEngine:
     ML Engine v2 — scikit-learn + Rule-Based Fallback
     ──────────────────────────────────────────────────
     Fitur ML nyata (aktif jika sklearn tersedia):
-    • KNeighborsClassifier    — klasifikasi tipe pemain + confidence %  (KNN.pkl)
-    • RandomForestRegressor   — prediksi skor sesi berikutnya, tanpa scaler  (RFR.pkl)
-    • IsolationForest         — deteksi sesi anomali (threshold dari notebook)  (ISO.pkl)
-    • HistGradientBoosting    — rekomendasi difficulty  (GBM.pkl)
-    • MultiOutputRegressor    — profil skill 11 dimensi  (Multioutput_regressor_GBM.pkl)
-    • StandardScaler          — normalisasi fitur (KNN, ISO, GBM, Multi — bukan RFR)
+    • KNeighborsClassifier          — klasifikasi tipe pemain + confidence %  (Player_Classifier.pkl)
+    • HistGradientBoostingRegressor — prediksi skor sesi berikutnya  (Score_Prediction.pkl)
+    • IsolationForest               — deteksi sesi anomali (threshold dari notebook)  (Detect_Anomaly.pkl)
+    • RandomForestClassifier        — rekomendasi difficulty  (Difficulty_Recommender.pkl)
+    • MultiOutputRegressor+HistGBR  — profil skill 11 dimensi  (Performance_Prediction.pkl)
+    • GradientBoostingRegressor     — threshold hint timer adaptif  (Hint_Timer.pkl)
+    • StandardScaler                — normalisasi fitur (KNN, ISO, RFC, Multi — bukan HistGBR)
 
     Jika sklearn tidak tersedia, fallback ke rule-based scoring.
     """
@@ -1024,7 +1194,7 @@ class PlayerMLEngine:
         # sklearn model instances (None sampai di-train)
         self._knn           = None
         self._knn_scaler    = None
-        self._rfr           = None   # RandomForestRegressor — tidak butuh scaler (RFR.pkl)
+        self._rfr           = None   # HistGradientBoostingRegressor — prediksi skor berikutnya (Score_Prediction.pkl)
         self._iso           = None
         self._iso_scaler    = None
         self._iso_threshold = 0.0
@@ -1040,15 +1210,30 @@ class PlayerMLEngine:
         Jika KNN.pkl ada (dari notebook), baca meta params (k, metric, weights).
         """
         try:
-            cached = _load_pkl(PKL_KNN)
+            cached = _load_pkl(PKL_CLF)
             if cached is not None:
                 self._knn        = cached["model"]
                 self._knn_scaler = cached["scaler"]
-                # Simpan best params dari notebook agar retrain berikutnya konsisten
+                # Simpan best params dari notebook agar retrain berikutnya konsisten.
+                # Notebook Model_Classify_Player menyimpan n_neighbors, metric, weights
+                # di dalam key 'meta'.
                 meta = cached.get("meta", {})
                 self._knn_best_k       = int(meta.get("n_neighbors", 3))
                 self._knn_best_metric  = str(meta.get("metric", "euclidean"))
                 self._knn_best_weights = str(meta.get("weights", "uniform"))
+                # Baca CV accuracy dari meta (notebook simpan 'cv_accuracy',
+                # retrain internal simpan 'cv_f1_macro' — baca keduanya)
+                _cv_acc = float(
+                    meta.get("cv_f1_macro",
+                             meta.get("cv_accuracy", 0.0))
+                )
+                # Jika belum tersimpan di meta, baca dari root level 'accuracy'
+                if _cv_acc <= 0.0:
+                    _cv_acc = float(cached.get("accuracy", 0.0))
+                # Simpan ke meta lokal agar _train_models bisa membandingkan
+                # dengan benar terlepas dari sumber PKL (notebook atau retrain)
+                if "cv_f1_macro" not in meta and _cv_acc > 0.0:
+                    meta["cv_f1_macro"] = _cv_acc
                 return
             # Belum ada pkl → train dari data sintetis bawaan
             X = np.array(_KNN_SYNTHETIC_X, dtype=float)
@@ -1065,7 +1250,7 @@ class PlayerMLEngine:
             # Simpan PKL lengkap — X_syn/y_syn wajib ada agar _train_models
             # tidak jatuh ke fallback 20-sampel dan cv_f1_macro = 0.0 memastikan
             # model notebook (dari notebook Model_KNN.ipynb) akan menimpa ini.
-            _save_pkl(PKL_KNN, {
+            _save_pkl(PKL_CLF, {
                 "model":    knn,
                 "scaler":   scaler,
                 "accuracy": 0.0,
@@ -1102,7 +1287,7 @@ class PlayerMLEngine:
             # Jika ada data aktual, selalu retrain agar model up-to-date.
             # Jika tidak ada data aktual, coba load dari KNN.pkl dulu.
             if n == 0:
-                cached = _load_pkl(PKL_KNN)
+                cached = _load_pkl(PKL_CLF)
                 if cached is not None:
                     self._knn        = cached["model"]
                     self._knn_scaler = cached["scaler"]
@@ -1110,7 +1295,7 @@ class PlayerMLEngine:
             else:
                 try:
                     from sklearn.model_selection import cross_val_score, StratifiedKFold
-                    _syn_base = _load_pkl(PKL_KNN)
+                    _syn_base = _load_pkl(PKL_CLF)
                     if (
                         _syn_base is not None
                         and "X_syn" in _syn_base
@@ -1131,7 +1316,13 @@ class PlayerMLEngine:
                     _best_weights = str(_meta.get("weights",
                                        getattr(self, "_knn_best_weights", "uniform")))
                     # CV F1-macro notebook (dari meta) — dipakai sebagai baseline perbandingan
-                    _notebook_cv_f1 = float(_meta.get("cv_f1_macro", 0.0))
+                    # Notebook Model_Classify_Player menyimpan 'cv_accuracy' di meta,
+                    # sedangkan retrain internal menyimpan 'cv_f1_macro'.
+                    # Baca keduanya agar kompatibel dengan kedua sumber model.
+                    _notebook_cv_f1 = float(
+                        _meta.get("cv_f1_macro",
+                                  _meta.get("cv_accuracy", 0.0))
+                    )
 
                     # Kumpulkan sesi dari SEMUA pemain untuk memperkaya training data
                     all_sessions = list(self.sessions)
@@ -1186,8 +1377,14 @@ class PlayerMLEngine:
                         new_cv_f1 = float(_cv_scores.mean())
 
                         # Hanya timpa KNN.pkl jika CV F1 baru benar-benar lebih baik
-                        # dari CV F1 notebook (bukan dari training score lama)
-                        _ref_f1 = _notebook_cv_f1 if _notebook_cv_f1 > 0 else (
+                        # dari CV F1 notebook (bukan dari training score lama).
+                        # Notebook Model_Classify_Player menyimpan 'cv_accuracy' di meta,
+                        # retrain internal menyimpan 'cv_f1_macro'. Baca keduanya.
+                        _meta_ref_f1 = float(
+                            _meta.get("cv_f1_macro",
+                                      _meta.get("cv_accuracy", 0.0))
+                        )
+                        _ref_f1 = _meta_ref_f1 if _meta_ref_f1 > 0 else (
                             float(_syn_base["accuracy"]) if _syn_base and "accuracy" in _syn_base else 0.0
                         )
                         _save_new_knn = new_cv_f1 >= _ref_f1 + 0.005   # harus lebih baik ≥ 0.5%
@@ -1195,7 +1392,7 @@ class PlayerMLEngine:
                         self._knn        = knn
                         self._knn_scaler = scaler
                         if _save_new_knn:
-                            _save_pkl(PKL_KNN, {
+                            _save_pkl(PKL_CLF, {
                                 "model":    knn,
                                 "scaler":   scaler,
                                 "accuracy": new_cv_f1,   # simpan CV F1, bukan training acc
@@ -1213,15 +1410,15 @@ class PlayerMLEngine:
                 except Exception:
                     pass
 
-            # ── 2. Random Forest Regressor: prediksi skor sesi berikutnya ──
-            # Sesuai notebook Model_Random_Forest_Regressor.ipynb:
+            # ── 2. HistGradientBoostingRegressor: prediksi skor sesi berikutnya ──
+            # Sesuai notebook Model_Score_Prediction.ipynb:
             # - 4 fitur: [session_idx, time_per_cell, error_rate, hint_rate]
-            # - TIDAK butuh StandardScaler (tree-based, invariant terhadap scaling)
+            # - TIDAK butuh StandardScaler (boosting berbasis histogram, invariant terhadap scaling)
             # - Output: prediksi skor sesi berikutnya (satu nilai kontinu ≥ 0)
             if n >= 3:
-                cached_rfr = _load_pkl(PKL_RFR)
+                cached_rfr = _load_pkl(PKL_SCORE)
                 # PROTEKSI: jika sesi aktual < 15, selalu pakai model notebook
-                # RFR notebook dilatih dari 300 pemain sintetis — jauh lebih representatif
+                # HistGBR notebook dilatih dari 300 pemain sintetis — jauh lebih representatif
                 # dari 3-14 sesi satu pemain yang cenderung overfit ke pola individu
                 if cached_rfr is not None and n < 15:
                     self._rfr = cached_rfr["model"]
@@ -1242,37 +1439,36 @@ class PlayerMLEngine:
                             y_rfr.append(sc)
                         X_rfr = np.array(X_rfr, dtype=float)
                         y_rfr = np.array(y_rfr, dtype=float)
-                        rfr   = RandomForestRegressor(
-                            n_estimators=100,
-                            max_depth=10,
-                            min_samples_leaf=2,
+                        rfr = HistGradientBoostingRegressor(
+                            max_iter=200,
+                            learning_rate=0.10,
+                            min_samples_leaf=20,
                             random_state=42,
-                            oob_score=True,
-                            n_jobs=-1,
                         )
                         rfr.fit(X_rfr, y_rfr)
 
-                        # ── Validasi dengan OOB score (bukan training R²) ──
-                        # OOB score adalah estimasi out-of-sample yang built-in di RF —
-                        # setiap sampel hanya dinilai oleh pohon yang tidak melihatnya.
-                        # Ini jauh lebih jujur dari training R² yang selalu mendekati 1.0.
-                        new_oob = float(getattr(rfr, "oob_score_", -999))
+                        # ── Validasi dengan CV R² (bukan training R²) ──
+                        # HistGBR tidak punya OOB score bawaan, pakai cross-val sebagai
+                        # estimasi out-of-sample yang jujur.
+                        from sklearn.model_selection import cross_val_score, KFold
+                        _kf_rfr = KFold(n_splits=min(5, len(X_rfr)), shuffle=True, random_state=42)
+                        _cv_rfr = cross_val_score(rfr, X_rfr, y_rfr, cv=_kf_rfr, scoring="r2")
+                        new_oob = float(_cv_rfr.mean())
                         _old_ref_r2 = cached_rfr.get("r2", 0.0) if cached_rfr else 0.0
-                        # Hanya simpan jika OOB score benar-benar lebih baik dari
-                        # R² model lama (tanpa toleransi negatif — harus murni lebih baik)
-                        _save_new_rfr = (new_oob != -999) and (new_oob > _old_ref_r2)
+                        # Hanya simpan jika CV R² benar-benar lebih baik dari model lama
+                        _save_new_rfr = new_oob > _old_ref_r2
                         self._rfr = rfr
                         if _save_new_rfr:
-                            _save_pkl(PKL_RFR, {
+                            _save_pkl(PKL_SCORE, {
                                 "model": rfr,
-                                "r2":    new_oob,   # simpan OOB score, bukan training R²
+                                "r2":    new_oob,   # simpan CV R², bukan training R²
                                 "meta": {
-                                    "model_type":    "RandomForestRegressor",
+                                    "model_type":    "HistGradientBoostingRegressor",
                                     "needs_scaler":  False,
                                     "feature_names": ["session_idx", "time_per_cell",
                                                       "error_rate", "hint_rate"],
                                     "n_train":       len(X_rfr),
-                                    "score_type":    "oob_score",
+                                    "score_type":    "cv_r2_mean",
                                 },
                             })
                     except Exception:
@@ -1281,7 +1477,7 @@ class PlayerMLEngine:
             # ── 3. Isolation Forest: deteksi sesi anomali ────────────────      
             if n >= 5:
                 # Selalu prioritaskan pkl v2 (berisi optimal_threshold)
-                cached_iso = _load_pkl(PKL_ISO)
+                cached_iso = _load_pkl(PKL_ANO)
                 if cached_iso is not None:
                     self._iso           = cached_iso["model"]
                     self._iso_scaler    = cached_iso["scaler"]
@@ -1438,10 +1634,10 @@ class PlayerMLEngine:
 
     def predict_next_score(self):
         """
-        Prediksi skor sesi berikutnya menggunakan Random Forest Regressor.
+        Prediksi skor sesi berikutnya menggunakan HistGradientBoostingRegressor.
         Return: (predicted_score: int, available: bool)
         Butuh minimal 3 sesi untuk aktif.
-        RF tidak butuh StandardScaler — langsung prediksi dari raw features.
+        HistGBR tidak butuh StandardScaler — langsung prediksi dari raw features.
         Input: [session_idx, time_per_cell, error_rate, hint_rate]
         """
         if not SKLEARN_AVAILABLE or len(self.sessions) < 3:
@@ -1450,7 +1646,7 @@ class PlayerMLEngine:
             self._train_models()
             if self._rfr is None:
                 # Coba load langsung dari RFR.pkl sebagai fallback
-                cached = _load_pkl(PKL_RFR)
+                cached = _load_pkl(PKL_SCORE)
                 if cached is not None:
                     self._rfr = cached["model"]
                 else:
@@ -1799,7 +1995,7 @@ class AttractorScreen(tk.Frame):
         # Header
         tk.Label(parent, text="STATISTIK GLOBAL",
                  font=("Segoe UI", 10, "bold"),
-                 bg=C_SURFACE, fg=C_TEXT_DIM).pack(anchor="w", padx=14, pady=(14, 6))
+                 bg=C_SURFACE, fg=C_TEXT).pack(anchor="w", padx=14, pady=(14, 6))
         tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x")
 
         # Stat cards — teks label tanpa emoji agar rendering stabil
@@ -1864,18 +2060,18 @@ class AttractorScreen(tk.Frame):
         tk.Frame(parent, height=1, bg=C_BORDER).pack(fill="x")
 
         features = [
-            ("🎯", "KNN  Player Typing",
-             "Klasifikasi tipe pemain dari\n6 fitur sesi bermain",     C_ACCENT),
-            ("📈", "Random Forest Regressor",
-             "Prediksi skor sesi berikutnya\nberbasis pola historis",  C_ACCENT2),
+            ("🎯", "K-Nearest Neighbour",
+             "Klasifikasi tipe pemain berdasarkan\n6 fitur sesi bermain", C_ACCENT),
+            ("📈", "HistGradientBoosting Regressor",
+             "Prediksi skor sesi berikutnya\nberdasarkan pola historis pemain", C_ACCENT2),
             ("🔍", "Isolation Forest",
-             "Deteksi sesi anomali dari\npola bermain abnormal",       C_WARN),
+             "Deteksi sesi anomali dari\npola bermain yang tidak wajar", C_WARN),
             ("⚡", "MRV Backtracking Solver",
-             "Algoritma AI optimal dengan\nheuristic Min-Remaining-Val", C_PURPLE),
-            ("🧩", "GBM Difficulty Recommender",
-             "Rekomendasi tingkat kesulitan\nberikutnya via GBM",      C_PINK),
-            ("⏱️",  "Adaptive Hint Timer",
-             "Threshold hint adaptif\nper profil gaya bermain",        C_GOLD),
+             "Algoritma AI optimal dengan\nheuristic Minimum Remaining Values", C_PURPLE),
+            ("🧩", "RFC Difficulty Recommender",
+             "Rekomendasi tingkat difficulty\nberikutnya melalui RFC", C_PINK),
+            ("⏱️",  "GBR Hint Timer",
+             "Threshold hint adaptif dilatih\ndengan Gradient Boosting Regressor", C_GOLD),
         ]
 
         ff = tk.Frame(parent, bg=C_SURFACE)
@@ -2074,7 +2270,7 @@ class AttractorScreen(tk.Frame):
             return
         try:
             cur = self._tap_lbl.cget("fg")
-            nxt = C_TEXT_DIM if cur == C_ACCENT else C_ACCENT
+            nxt = C_ACCENT2 if cur == C_ACCENT else C_ACCENT
             self._tap_lbl.config(fg=nxt)
             self._blink_job = self.after(650, self._blink_tap)
         except Exception:
@@ -2243,7 +2439,8 @@ class LoginScreen(tk.Frame):
                   bg=C_ACCENT, fg=C_BG,
                   activebackground="#79BFFF", activeforeground=C_BG,
                   relief="flat", cursor="hand2", pady=10,
-                  command=self._login).pack(padx=40, fill="x", pady=(8, 0))
+                  command=lambda: (_play_sfx(_SFX_SELECT), self._login())
+                  ).pack(padx=40, fill="x", pady=(8, 0))
 
         # DAFTAR PEMAIN button
         tk.Button(card, text="PLAYER LIST",
@@ -2252,7 +2449,8 @@ class LoginScreen(tk.Frame):
                   activebackground=C_BORDER, activeforeground=C_TEXT,
                   relief="flat", cursor="hand2", pady=10,
                   highlightbackground=C_ACCENT, highlightthickness=1,
-                  command=self._open_player_login).pack(padx=40, fill="x", pady=(10, 0))
+                  command=lambda: (_play_sfx(_SFX_CLICK), self._open_player_login())
+                  ).pack(padx=40, fill="x", pady=(10, 0))
 
         # LEADERBOARD button
         tk.Button(card, text="🏆  LEADERBOARD",
@@ -2261,7 +2459,7 @@ class LoginScreen(tk.Frame):
                   activebackground=C_BORDER, activeforeground=C_GOLD,
                   relief="flat", cursor="hand2", pady=10,
                   highlightbackground=C_GOLD, highlightthickness=1,
-                  command=lambda: LeaderboardWindow(self.master, load_data())
+                  command=lambda: (_play_sfx(_SFX_CLICK), LeaderboardWindow(self.master, load_data()))
                   ).pack(padx=40, fill="x", pady=(10, 0))
 
         n_p = len(self.data.get("players", {}))
@@ -2631,12 +2829,13 @@ class GridSizeScreen(tk.Frame):
                         activebackground="#FFFFFF",
                         activeforeground=C_BG,
                         relief="flat", cursor="hand2", pady=12,
-                        command=lambda b=box: self.on_select(b))
+                        command=lambda b=box: (_play_sfx(_SFX_SELECT), self.on_select(b)))
         btn.pack(fill="x")
 
         # ── Hover glow ────────────────────────────────────────────
         def _enter(_):
             card.config(highlightbackground=color, highlightthickness=2)
+            _play_sfx(_SFX_HOVER)
 
         def _leave(_):
             card.config(highlightbackground=C_BORDER, highlightthickness=1)
@@ -2648,7 +2847,7 @@ class GridSizeScreen(tk.Frame):
             w.bind("<Leave>", _leave)
         # Click anywhere on card selects it
         for w in [card, spacer, preview_wrap, size_row, feat_wrap]:
-            w.bind("<Button-1>", lambda _, b=box: self.on_select(b))
+            w.bind("<Button-1>", lambda _, b=box: (_play_sfx(_SFX_SELECT), self.on_select(b)))
 
 # =====================================================
 # SCREEN: DIFFICULTY SELECT  (Redesigned v2)
@@ -2783,7 +2982,7 @@ class DifficultyScreen(tk.Frame):
                 padx=8, pady=4,
                 highlightbackground=C_BORDER,
                 highlightthickness=1,
-                command=self.on_back,
+                command=lambda: (_play_sfx(_SFX_CLICK), self.on_back()),
             )
             # y=14: tepat di bawah gradient bar (8px) + sedikit padding
             back_btn.place(x=28, y=14)
@@ -3004,11 +3203,12 @@ class DifficultyScreen(tk.Frame):
                   activebackground="#FFFFFF",
                   activeforeground=C_BG,
                   relief="flat", cursor="hand2", pady=10,
-                  command=lambda d=diff: self.on_select(d)).pack(fill="x")
+                  command=lambda d=diff: (_play_sfx(_SFX_SELECT), self.on_select(d))).pack(fill="x")
 
         # ── Hover glow ────────────────────────────────────────────
         def _enter(_):
             card.config(highlightbackground=color, highlightthickness=2)
+            _play_sfx(_SFX_HOVER)
 
         def _leave(_):
             card.config(highlightbackground=color if is_rec else C_BORDER,
@@ -3019,7 +3219,7 @@ class DifficultyScreen(tk.Frame):
             w.bind("<Enter>", _enter)
             w.bind("<Leave>", _leave)
         for w in [card, icon_wrap, feat_wrap, spacer]:
-            w.bind("<Button-1>", lambda _, d=diff: self.on_select(d))
+            w.bind("<Button-1>", lambda _, d=diff: (_play_sfx(_SFX_SELECT), self.on_select(d)))
 
 # =====================================================
 # LEADERBOARD WINDOW  (tabbed by grid+difficulty)
@@ -3983,7 +4183,7 @@ class PerformanceDashboard(tk.Frame):
         # RFR card
         pred_txt = f"🏆 {pred_score}" if pred_avail and pred_score is not None else "—"
         pred_sub  = f"vs saat ini {s.get('score', 0) or 0}" if pred_avail and pred_score is not None else "Butuh minimal 3 sesi"
-        self._mini_ml_card(cols, "RANDOM FOREST REGRESSOR", "Prediksi Skor Berikutnya",
+        self._mini_ml_card(cols, "HistGBR", "Prediksi Skor Berikutnya",
                            f"{pred_txt}  ·  {pred_sub}",
                            C_GOLD if pred_avail and pred_score is not None else C_TEXT_DIM,
                            1, 1)
@@ -4430,7 +4630,8 @@ class GameScreen(tk.Frame):
         self.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         # ═══ SIDEBAR ═══
-        sb = tk.Frame(self, bg=C_SIDEBAR, width=236)
+        _sb_w = 275   # lebar sidebar seragam untuk semua ukuran grid
+        sb = tk.Frame(self, bg=C_SIDEBAR, width=_sb_w)
         sb.pack(side="left", fill="y")
         sb.pack_propagate(False)
 
@@ -4446,8 +4647,8 @@ class GameScreen(tk.Frame):
                 from PIL import Image as _SbImg, ImageTk as _SbITk
                 _sb_pil  = _SbImg.open(_sb_logo_path).convert("RGBA")
                 _sb_h    = 28   # ikon kecil di sidebar
-                _sb_w    = int(_sb_pil.width * _sb_h / _sb_pil.height)
-                _sb_pil  = _sb_pil.resize((_sb_w, _sb_h), _SbImg.LANCZOS)
+                _sb_logo_w = int(_sb_pil.width * _sb_h / _sb_pil.height)
+                _sb_pil  = _sb_pil.resize((_sb_logo_w, _sb_h), _SbImg.LANCZOS)
                 _sb_logo = _SbITk.PhotoImage(_sb_pil)
             except Exception:
                 _sb_logo = None
@@ -4472,13 +4673,13 @@ class GameScreen(tk.Frame):
                  font=("Segoe UI", 13, "bold"), bg=C_SIDEBAR, fg=C_TEXT).pack(side="left")
         tk.Label(brand, text=f"@{self.username}  |  {self.N}×{self.N}",
                  font=FONT_SMALL, bg=C_SIDEBAR, fg=C_TEXT_DIM).pack()
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x")
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", pady=(4, 0))
 
         # Difficulty buttons
         df = tk.Frame(sb, bg=C_SIDEBAR, pady=3)
         df.pack(fill="x", padx=10)
         tk.Label(df, text="DIFFICULTY", font=("Segoe UI", 8, "bold"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w")
+                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w", pady=(2, 1))
         for d in ["Easy", "Normal", "Hard"]:
             b = tk.Button(df, text=get_diff_theme(d)["emoji"] + "  " + d,
                           font=FONT_BTN_SM, relief="flat", cursor="hand2", pady=2,
@@ -4488,24 +4689,23 @@ class GameScreen(tk.Frame):
                      fg=C_BG if d == self.difficulty else C_TEXT_DIM)
             setattr(self, f"_dbtn_{d}", b)
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=1)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=(2, 3))
 
         # Controls
         cf = tk.Frame(sb, bg=C_SIDEBAR)
         cf.pack(fill="x", padx=10)
         tk.Label(cf, text="KONTROL", font=("Segoe UI", 8, "bold"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w")
+                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w", pady=(2, 1))
         self._sb_btn(cf, "🔄  New Game",    "#DA3633", self._new_game)
-        self._sb_btn(cf, "💡  Hint",         "#E67E22", self._give_hint)
         self._sb_btn(cf, "🏆  Leaderboard",  C_GOLD,
                      lambda: LeaderboardWindow(self.master, load_data()))
-        self._sb_btn(cf, "◀  Pilih Grid",   C_ACCENT,  self._back_to_grid)
+        self._sb_btn(cf, "◀  Back",   C_ACCENT,  self._back_to_grid)
 
-        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(3, 2))
+        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(5, 3))
 
         # Ganti Pemain — lebih menonjol dengan bg berwarna redup
         btn_gp = tk.Button(cf,
-            text="🔙  Ganti Pemain",
+            text="🔙  Switch Player",
             font=FONT_BTN_SM,
             bg=C_SIDEBAR_PURPLE_BG, fg=C_PURPLE,
             activebackground=C_PURPLE, activeforeground=C_BG,
@@ -4524,9 +4724,7 @@ class GameScreen(tk.Frame):
         btn_lo.pack(fill="x", pady=(1, 2))
         Tooltip(btn_lo, "Back to login page (F5)")
 
-        tk.Frame(cf, height=1, bg=C_BORDER).pack(fill="x", pady=(2, 0))
-
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=(5, 2))
 
         # Draft Mode Panel (only shown in Hard)
         self.draft_panel = tk.Frame(sb, bg=C_SIDEBAR)
@@ -4534,35 +4732,36 @@ class GameScreen(tk.Frame):
         if self.difficulty == "Hard":
             self._build_draft_panel()
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=(4, 2))
 
         # AI Solver
         af = tk.Frame(sb, bg=C_SIDEBAR)
         af.pack(fill="x", padx=10)
-        tk.Label(af, text="AI SOLVER", font=("Segoe UI", 8, "bold"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w")
-        btn_bt = self._sb_btn(af, "🤖  Backtracking MRV", "#1ABC9C", self._run_backtrack)
-        Tooltip(btn_bt, "Backtracking + MRV heuristic: solver optimal")
+        tk.Label(af, text="AI FEATURES", font=("Segoe UI", 8, "bold"),
+                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w", pady=(2, 1))
+        btn_bt = self._sb_btn(af, "🤖  Solve", "#1ABC9C", self._run_backtrack)
+        Tooltip(btn_bt, "Solve using Backtracking + MRV heuristic")
 
         # ML Transparency toggle — tombol kecil di bawah AI Solver
         self._ml_toggle_btn = tk.Button(
             af,
-            text="🔬  View Live Analysis  [I]",
+            text="🔬  Live Analysis",
             font=("Segoe UI", 8, "bold"),
             bg=C_SURFACE2, fg=C_PURPLE,
             activebackground=C_PURPLE, activeforeground=C_BG,
             relief="flat", cursor="hand2", pady=3, anchor="w",
             command=self._toggle_ml_panel,
         )
+        Tooltip(self._ml_toggle_btn, "View live analysis from the ML engine (i)")
         self._ml_toggle_btn.pack(fill="x", pady=1)
 
-        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=2)
+        tk.Frame(sb, height=1, bg=C_BORDER).pack(fill="x", padx=10, pady=(4, 2))
 
         # Session stats
         sf = tk.Frame(sb, bg=C_SIDEBAR)
         sf.pack(fill="x", padx=10)
         tk.Label(sf, text="STATISTIK SESI", font=("Segoe UI", 8, "bold"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w")
+                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(anchor="w", pady=(2, 1))
         self.lbl_moves  = self._stat_row(sf, "Moves",        "0")
         self.lbl_errors = self._stat_row(sf, "Errors / Batas", "0/0")
         self.lbl_hints  = self._stat_row(sf, "Hints",  "0")
@@ -4580,7 +4779,7 @@ class GameScreen(tk.Frame):
                                            col=C_ERROR)
 
         # ── Hearts bar ─────────────────────────────────────────────
-        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(2,1))
+        tk.Frame(sf, height=1, bg=C_BORDER).pack(fill="x", pady=(4, 2))
         heart_lbl_row = tk.Frame(sf, bg=C_SIDEBAR)
         heart_lbl_row.pack(fill="x")
         tk.Label(heart_lbl_row, text="HATI (HINT)",
@@ -4605,7 +4804,7 @@ class GameScreen(tk.Frame):
 
         # Hint action placed directly under the heart icons
         hint_wrap = tk.Frame(sf, bg=C_SIDEBAR)
-        hint_wrap.pack(fill="x", pady=(2, 0))
+        hint_wrap.pack(fill="x", pady=(6, 4))
 
         hint_btn = tk.Button(
             hint_wrap,
@@ -4624,11 +4823,6 @@ class GameScreen(tk.Frame):
             command=self._give_hint,
         )
         hint_btn.pack(fill="x", pady=1)
-
-
-        tk.Label(sb, text="Esc = Toggle Fullscreen",
-                 font=("Segoe UI", 8, "italic"),
-                 bg=C_SIDEBAR, fg=C_TEXT_DIM).pack(side="bottom", pady=4)
 
         # ═══ MAIN AREA ═══
         main = tk.Frame(self, bg=C_BG)
@@ -4667,10 +4861,10 @@ class GameScreen(tk.Frame):
 
         # Board (canvas-based)
         board_wrap = tk.Frame(main, bg=C_BG)
-        board_wrap.pack(expand=True)
+        board_wrap.pack(expand=True, fill="both")
         self.grid_container = tk.Frame(board_wrap,
                                        bg=self.theme["grid_line"], padx=3, pady=3)
-        self.grid_container.pack()
+        self.grid_container.place(relx=0.5, rely=0.5, anchor="center")
         self._build_grid()
 
         # Numpad area
@@ -4681,16 +4875,19 @@ class GameScreen(tk.Frame):
         self._build_numpad()
 
         self.master.bind("<Key>",    self._on_key)
-        self.master.bind("<Escape>", self._on_esc)
+        # ESC ditangani secara global oleh SudokuApp._on_esc_global
         self._idle_check()
 
     # ── Sidebar helpers ──────────────────────────────
     def _sb_btn(self, parent, text, color, cmd):
+        def _cmd_with_sfx():
+            _play_sfx(_SFX_CLICK)
+            cmd()
         b = tk.Button(parent, text=text, font=FONT_BTN_SM,
                       bg=C_SURFACE2, fg=color,
                       activebackground=color, activeforeground=C_BG,
                       relief="flat", cursor="hand2", pady=3, anchor="w",
-                      command=cmd)
+                      command=_cmd_with_sfx)
         b.pack(fill="x", pady=1)
         return b
 
@@ -4714,7 +4911,7 @@ class GameScreen(tk.Frame):
         # Section title
         title_row = tk.Frame(self.draft_panel, bg=C_SIDEBAR)
         title_row.pack(fill="x")
-        tk.Label(title_row, text="✏ MODE DRAFT",
+        tk.Label(title_row, text="✏ DRAFT MODE",
                  font=("Segoe UI", 8, "bold"),
                  bg=C_SIDEBAR, fg=C_PURPLE).pack(side="left")
         tk.Label(title_row, text="  [D]",
@@ -4876,7 +5073,7 @@ class GameScreen(tk.Frame):
                 text="✏  Draft Mode: AKTIF",
                 bg="#4A2060", fg="#E8AAFF",
                 activebackground="#6A30A0")
-            self.draft_badge.config(text=" ✏ PENCIL MODE ")
+            self.draft_badge.config(text=" ✏ DRAFT MODE ")
             self.draft_badge.pack(side="left", padx=4)
         else:
             self.draft_toggle_btn.config(
@@ -5285,9 +5482,183 @@ class GameScreen(tk.Frame):
         elif event.keysym in ("Up", "Down", "Left", "Right"):
             self._move_sel(event.keysym)
 
-    def _on_esc(self, _):
-        fs = self.master.attributes("-fullscreen")
-        self.master.attributes("-fullscreen", not fs)
+    def _on_esc(self, _=None):
+        self._show_back_to_grid_confirm()
+
+    def _show_back_to_grid_confirm(self):
+        """Tampilkan popup konfirmasi kembali ke pilih grid (bukan keluar program)."""
+        # Jangan buat duplikat popup
+        if hasattr(self, "_exit_popup") and self._exit_popup and \
+                self._exit_popup.winfo_exists():
+            return
+
+        # ── Ambil blur screenshot SEBELUM overlay dibuat ──────────────────────
+        try:
+            _root_ref = self.winfo_toplevel()
+        except Exception:
+            _root_ref = None
+        _blur_pre_game = _grab_blur_bg(_root_ref) if _root_ref else None
+
+        # Mount overlay di ROOT WINDOW (bukan self) agar menutupi icon pojok
+        # yang juga tinggal di root level. Sama dengan _show_exit_confirm_global.
+        _overlay_parent = _root_ref if _root_ref else self
+        overlay = tk.Frame(_overlay_parent, bg="")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        overlay.lift()   # pastikan di atas semua widget root termasuk icon pojok
+        self._exit_popup = overlay
+
+        # Canvas blur sebagai background overlay
+        if _root_ref:
+            dim = _place_blur_canvas(overlay, _root_ref, pre_captured=_blur_pre_game)
+        else:
+            dim = tk.Canvas(overlay, bg="#050810", highlightthickness=0)
+        if not PIL_AVAILABLE or _root_ref is None:
+            dim.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # ── Outer glow ring biru + Card terpusat ──────────────────────────────
+        card_bg     = C_SURFACE
+        card_border = C_ACCENT   # biru — bukan merah, karena ini navigasi bukan peringatan
+
+        glow_exit = tk.Frame(overlay, bg=card_border)
+        glow_exit.place(relx=0.5, rely=0.62, anchor="center", width=440, height=248)
+
+        card = tk.Frame(glow_exit, bg=card_bg,
+                        highlightbackground=card_border, highlightthickness=0)
+        card.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # ── Slide-in animation dari bawah ─────────────────────────────────────
+        SLIDE_STEPS = 12
+        def _slide_exit(step, _glow=glow_exit, _ov=overlay):
+            if not _ov.winfo_exists():
+                return
+            t_s    = step / SLIDE_STEPS
+            t_ease = 1 - (1 - t_s) ** 3
+            rely_now = 0.62 + (0.5 - 0.62) * t_ease
+            try:
+                _glow.place(rely=rely_now)
+            except Exception:
+                return
+            if step < SLIDE_STEPS:
+                _ov.after(16, lambda: _slide_exit(step + 1))
+        _slide_exit(0)
+
+        # Gradient accent stripe atas — biru→ungu (navigasi, bukan bahaya)
+        _stripe_c1 = C_ACCENT
+        _stripe_c2 = C_PURPLE
+        stripe_cv = tk.Canvas(card, height=6, bg=card_bg, highlightthickness=0)
+        stripe_cv.pack(fill="x")
+        def _draw_stripe(cv=stripe_cv, _c1=_stripe_c1, _c2=_stripe_c2):
+            cv.update_idletasks()
+            w = cv.winfo_width() or 434
+            stops = [(0, _c1), (w // 2, _c2), (w, _c1)]
+            steps = 40
+            for i in range(len(stops) - 1):
+                x1, c1 = stops[i]
+                x2, c2 = stops[i + 1]
+                for k in range(steps):
+                    t_g = k / steps
+                    r_  = int(int(c1[1:3], 16) * (1 - t_g) + int(c2[1:3], 16) * t_g)
+                    g_  = int(int(c1[3:5], 16) * (1 - t_g) + int(c2[3:5], 16) * t_g)
+                    b_  = int(int(c1[5:7], 16) * (1 - t_g) + int(c2[5:7], 16) * t_g)
+                    xi  = x1 + k * (x2 - x1) // steps
+                    xj  = x1 + (k + 1) * (x2 - x1) // steps
+                    cv.create_rectangle(xi, 0, xj, 6,
+                                        fill=f"#{r_:02x}{g_:02x}{b_:02x}",
+                                        outline="")
+        stripe_cv.after(60, _draw_stripe)
+
+        # Icon + judul — desain navigasi, bukan peringatan bahaya
+        icon_row = tk.Frame(card, bg=card_bg)
+        icon_row.pack(pady=(18, 4))
+        tk.Label(icon_row, text="\U0001f3e0",
+                 font=("Segoe UI", 26), bg=card_bg, fg=C_ACCENT).pack(side="left", padx=(0, 8))
+        title_col = tk.Frame(icon_row, bg=card_bg)
+        title_col.pack(side="left")
+        tk.Label(title_col, text="Kembali ke Pilih Grid",
+                 font=("Segoe UI", 16, "bold"),
+                 bg=card_bg, fg=C_TEXT, anchor="w").pack(anchor="w")
+        tk.Label(title_col, text="Sesi ini akan dihentikan",
+                 font=("Segoe UI", 9),
+                 bg=card_bg, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
+
+        # Garis tipis
+        tk.Frame(card, height=1, bg=C_BORDER).pack(fill="x", padx=24, pady=(6, 0))
+
+        # Sub-teks informatif
+        tk.Label(card,
+                 text="Apakah Anda ingin keluar dari game ini\ndan kembali ke layar pemilihan grid?",
+                 font=("Segoe UI", 10),
+                 bg=card_bg, fg=C_TEXT_DIM,
+                 justify="center").pack(pady=(12, 16))
+
+        # Tombol aksi
+        btn_row = tk.Frame(card, bg=card_bg)
+        btn_row.pack(fill="x", padx=24, pady=(0, 20))
+
+        # ── Sembunyikan tombol tema & musik saat popup tampil ─────────────────
+        _corner_icons_lower()
+
+        def _cancel():
+            _corner_icons_restore()
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            self._exit_popup = None
+
+        def _confirm_back():
+            _corner_icons_restore()
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            self._exit_popup = None
+            # Kembali ke grid select (bukan tutup program)
+            self._back_to_grid()
+
+        cancel_btn = tk.Button(
+            btn_row,
+            text="Lanjut Bermain",
+            font=("Segoe UI", 10, "bold"),
+            bg=C_SURFACE2, fg=C_TEXT,
+            activebackground=C_BORDER, activeforeground=C_TEXT,
+            relief="flat", cursor="hand2", pady=10,
+            command=_cancel)
+        cancel_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        back_btn = tk.Button(
+            btn_row,
+            text="Ya, Kembali",
+            font=("Segoe UI", 10, "bold"),
+            bg=C_ACCENT, fg="#FFFFFF",
+            activebackground=C_PURPLE, activeforeground="#FFFFFF",
+            relief="flat", cursor="hand2", pady=10,
+            command=_confirm_back)
+        back_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        # Hover efek tombol Lanjut Bermain
+        cancel_btn.bind("<Enter>",
+            lambda _: cancel_btn.config(bg=C_BORDER, fg=C_TEXT))
+        cancel_btn.bind("<Leave>",
+            lambda _: cancel_btn.config(bg=C_SURFACE2, fg=C_TEXT))
+
+        # Klik di overlay (di luar card) → tutup popup
+        dim.bind("<Button-1>", lambda _: _cancel())
+        overlay.bind("<Button-1>", lambda e: _cancel()
+                     if e.widget is overlay else None)
+
+        # ESC lagi → batal (kembali bermain)
+        # return "break" agar event tidak merambat ke bind_all(_on_esc_global)
+        def _on_esc_back_confirm(event=None):
+            _cancel()
+            return "break"
+        overlay.bind("<Escape>", _on_esc_back_confirm)
+        overlay.focus_set()
+        self._exit_popup = overlay
+
+    # Alias lama — dipertahankan agar tidak ada referensi yang putus
+    def _show_exit_confirm(self):
+        self._show_back_to_grid_confirm()
 
     def _move_sel(self, key):
         if not self.selected:
@@ -6113,7 +6484,7 @@ class GameScreen(tk.Frame):
         # 1. Posisi diingat (_ml_panel_pos) jika user pernah drag
         # 2. Default: pojok KANAN ATAS layar, tidak menimpa board
         self.update_idletasks()
-        MARGIN_RIGHT = 70
+        MARGIN_RIGHT = 40
         MARGIN_TOP   = 195
 
         if self._ml_panel_pos is not None:
@@ -6142,7 +6513,7 @@ class GameScreen(tk.Frame):
         hdr.pack(fill="x")
         hdr_inner = tk.Frame(hdr, bg=C_PURPLE)
         hdr_inner.pack(fill="x", padx=10, pady=6)
-        tk.Label(hdr_inner, text="🔬  LIVE PREDICTION",
+        tk.Label(hdr_inner, text="🔬  LIVE ANALYSIS",
                  font=("Segoe UI", 9, "bold"),
                  bg=C_PURPLE, fg=C_BG).pack(side="left")
         close_btn = tk.Button(
@@ -6276,7 +6647,7 @@ class GameScreen(tk.Frame):
         self._ml_hint_idle.pack(side="left", padx=(4, 0))
 
         _sep()
-        # ── 3. RFR Predicted Next Score ────────────────────────────
+        # ── 3. HistGBR Predicted Next Score ─────────────────────────
         _section_title("📈", "PREDICTED SCORE", C_ACCENT2)
         rfr_card = tk.Frame(body, bg=bg_card,
                             highlightbackground=C_ACCENT2, highlightthickness=1)
@@ -6312,7 +6683,7 @@ class GameScreen(tk.Frame):
 
         _sep()
         # ── 5. MultiOutput Skill Bars ──────────────────────────────
-        _section_title("📊", "PEFORMANCE BAR", C_GOLD)
+        _section_title("📊", "PERFORMANCE BAR", C_GOLD)
         bars_frame = tk.Frame(body, bg=bg_panel)
         bars_frame.pack(fill="x", pady=(2, 4))
 
@@ -6522,7 +6893,7 @@ class GameScreen(tk.Frame):
         except Exception:
             pass
 
-        # 3. RFR Predicted Score
+        # 3. HistGBR Predicted Score
         try:
             if d.get("rfr_avail") and d.get("rfr_score") is not None:
                 score_txt = f"{d['rfr_score']:,} poin"
@@ -6827,7 +7198,8 @@ class PlayerSelectScreen(tk.Frame):
                   bg=C_PURPLE, fg=C_WHITE,
                   activebackground="#9B5FEF", activeforeground=C_WHITE,
                   relief="flat", cursor="hand2", pady=10, padx=24,
-                  command=self.on_new_player).pack(side="left", padx=(0,10))
+                  command=lambda: (_play_sfx(_SFX_SELECT), self.on_new_player())
+                  ).pack(side="left", padx=(0,10))
 
         # Tombol KEMBALI hanya tampil saat in-game (current_user sudah login).
         # Saat awal pemilihan pemain (current_user=None), tidak ada yang bisa
@@ -6845,7 +7217,7 @@ class PlayerSelectScreen(tk.Frame):
                       bg=C_SURFACE2, fg=C_TEXT_DIM,
                       activebackground=C_BORDER, activeforeground=C_TEXT,
                       relief="flat", cursor="hand2", pady=10, padx=18,
-                      command=_back_cmd
+                      command=lambda: (_play_sfx(_SFX_CLICK), _back_cmd())
                       ).pack(side="left")
         elif callable(self.on_back_to_login):
             # Tombol kembali ke login — hanya muncul saat masuk dari LoginScreen
@@ -6855,7 +7227,7 @@ class PlayerSelectScreen(tk.Frame):
                       bg=C_SURFACE2, fg=C_TEXT_DIM,
                       activebackground=C_BORDER, activeforeground=C_TEXT,
                       relief="flat", cursor="hand2", pady=10, padx=18,
-                      command=self.on_back_to_login
+                      command=lambda: (_play_sfx(_SFX_CLICK), self.on_back_to_login())
                       ).pack(side="left")
 
     # ── Left panel: compact player row ───────────────────────────
@@ -7098,7 +7470,7 @@ class PlayerSelectScreen(tk.Frame):
                       bg=C_ACCENT, fg=C_BG,
                       activebackground=C_ACCENT2, activeforeground=C_BG,
                       relief="flat", cursor="hand2", pady=8,
-                      command=lambda: self.on_select(username)
+                      command=lambda: (_play_sfx(_SFX_SELECT), self.on_select(username))
                       ).pack(fill="x", padx=24, pady=(14, 0))
             return
         
@@ -7166,9 +7538,82 @@ class PlayerSelectScreen(tk.Frame):
         AV = 72
         av_cv = tk.Canvas(hero_inner, width=AV, height=AV,
                           bg=C_SURFACE, highlightthickness=0)
-        av_cv.pack(side="left")
+        av_cv.pack(side="left", anchor="n", pady=(2,0))
         av_cv.after(80, lambda c=av_cv, col=tc, s=AV:
                     self._draw_avatar(c, s, col, self._initials(username)))
+
+        # ── Action button column (far right) — packed BEFORE hero_text
+        #    so it stays pinned to the right edge even when hero_text expands.
+        # ─────────────────────────────────────────────────────────────────────
+        # Pre-compute theme-aware button colours
+        _btn_fg        = C_BG   # text on coloured button
+        # Hover: lighten tc in dark mode, use a muted surface in light mode
+        try:
+            _hr = min(255, int(tc[1:3], 16) + 35)
+            _hg = min(255, int(tc[3:5], 16) + 35)
+            _hb = min(255, int(tc[5:7], 16) + 35)
+            _btn_hover_bg = f"#{_hr:02x}{_hg:02x}{_hb:02x}"
+        except Exception:
+            _btn_hover_bg = C_BORDER
+        _btn_hover_fg  = C_BG if _CURRENT_THEME_NAME == "dark" else "#1C2330"
+
+        hero_action = tk.Frame(hero_inner, bg=C_SURFACE)
+        hero_action.pack(side="right", anchor="center", padx=(16, 0), pady=0)
+
+        if is_me:
+            # Already the active user — show a muted "LANJUTKAN" pill
+            _cont_bg  = C_SURFACE2
+            _cont_fg  = C_TEXT
+            _cont_hov = C_BORDER
+            _cont_btn = tk.Button(
+                hero_action,
+                text="↩  LANJUTKAN",
+                font=("Segoe UI", 10, "bold"),
+                bg=_cont_bg, fg=_cont_fg,
+                activebackground=_cont_hov, activeforeground=C_TEXT,
+                relief="flat", cursor="hand2",
+                padx=18, pady=10,
+                command=lambda: self.on_select(username),
+            )
+            _cont_btn.pack()
+            # "active" badge beneath the button
+            tk.Label(hero_action,
+                     text="● Akun Aktif",
+                     font=("Segoe UI", 8, "bold"),
+                     bg=C_SURFACE, fg="#7EE787").pack(pady=(5, 0))
+        else:
+            # Primary CTA — prominent, right-aligned, visible immediately
+            _login_label = (
+                f"▶  Login as @{username}"
+                if not self.current_user
+                else f"⇄  Switch to @{username}"
+            )
+            _login_btn = tk.Button(
+                hero_action,
+                text=_login_label,
+                font=("Segoe UI", 10, "bold"),
+                bg=tc, fg=_btn_fg,
+                activebackground=_btn_hover_bg,
+                activeforeground=_btn_hover_fg,
+                relief="flat", cursor="hand2",
+                padx=18, pady=10,
+                command=lambda u=username: self.on_select(u),
+            )
+            _login_btn.pack()
+            # Micro hint beneath the button
+            _hint_text = (
+                "Klik untuk mulai bermain"
+                if not self.current_user
+                else f"Sesi @{self.current_user} akan dihentikan"
+            )
+            tk.Label(hero_action,
+                     text=_hint_text,
+                     font=("Segoe UI", 8),
+                     bg=C_SURFACE,
+                     fg=C_TEXT_DIM,
+                     wraplength=160,
+                     justify="center").pack(pady=(6, 0))
+        # ─────────────────────────────────────────────────────────────────────
 
         hero_text = tk.Frame(hero_inner, bg=C_SURFACE)
         hero_text.pack(side="left", padx=(16,0), fill="x", expand=True)
@@ -7334,63 +7779,50 @@ class PlayerSelectScreen(tk.Frame):
 
                 tk.Frame(hist_card, height=1, bg="#0F1520").pack(fill="x", padx=16)
 
-        # ── CTA / Konfirmasi Section ──────────────────────────────
-        cta_outer = tk.Frame(pad, bg=C_SURFACE,
-                             highlightbackground=C_BORDER, highlightthickness=1)
-        cta_outer.pack(fill="x", pady=(0, 8))
+        # ── Info / Konfirmasi Section ─────────────────────────────
+        # Tombol konfirmasi sudah berada di kanan atas (hero_action).
+        # Bagian ini hanya menampilkan konteks tambahan — tidak menduplikasi tombol.
+        if not is_me:
+            cta_outer = tk.Frame(pad, bg=C_SURFACE,
+                                 highlightbackground=C_BORDER, highlightthickness=1)
+            cta_outer.pack(fill="x", pady=(0, 8))
 
-        # Thin accent stripe at top of CTA box
-        tk.Frame(cta_outer, bg=tc, height=3).pack(fill="x")
+            # Thin accent stripe
+            tk.Frame(cta_outer, bg=C_WARN if self.current_user else tc, height=3).pack(fill="x")
 
-        cta_inner = tk.Frame(cta_outer, bg=C_SURFACE)
-        cta_inner.pack(fill="x", padx=18, pady=14)
+            cta_inner = tk.Frame(cta_outer, bg=C_SURFACE)
+            cta_inner.pack(fill="x", padx=18, pady=12)
 
-        if is_me:
-            # Already active — show "continue" in muted style
-            tk.Label(cta_inner,
-                     text="✓  Ini adalah akunmu saat ini",
-                     font=("Segoe UI", 10),
-                     bg=C_SURFACE, fg=C_TEXT_DIM).pack(anchor="w", pady=(0,8))
-            tk.Button(cta_inner,
-                      text="↩   LANJUTKAN",
-                      font=("Segoe UI", 11, "bold"),
-                      bg=C_SURFACE2, fg=C_TEXT,
-                      activebackground=C_BORDER, activeforeground=C_TEXT,
-                      relief="flat", cursor="hand2", pady=11,
-                      command=lambda: self.on_select(username)).pack(fill="x")
-        else:
-            # Confirm switch — two-step: preview → confirm button
             info_row = tk.Frame(cta_inner, bg=C_SURFACE)
-            info_row.pack(fill="x", pady=(0,10))
+            info_row.pack(fill="x")
 
-            tk.Label(info_row, text="⚠",
-                     font=("Segoe UI", 14), bg=C_SURFACE, fg=C_WARN).pack(side="left")
+            tk.Label(info_row, text="ℹ",
+                     font=("Segoe UI", 13), bg=C_SURFACE,
+                     fg=C_WARN if self.current_user else C_ACCENT).pack(side="left", anchor="n", pady=2)
+
             msg_col = tk.Frame(info_row, bg=C_SURFACE)
-            msg_col.pack(side="left", padx=(8,0))
-            tk.Label(msg_col,
-                     text=f"Kamu akan berganti ke  @{username}",
-                     font=("Segoe UI", 10, "bold"),
-                     bg=C_SURFACE, fg=C_TEXT, anchor="w").pack(anchor="w")
+            msg_col.pack(side="left", padx=(8, 0))
+
             if self.current_user:
                 tk.Label(msg_col,
-                         text=f"Sesi @{self.current_user} yang sedang berjalan akan dihentikan.",
-                         font=("Segoe UI", 9),
-                         bg=C_SURFACE, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
+                         text=f"Mengganti sesi aktif dari @{self.current_user}",
+                         font=("Segoe UI", 9, "bold"),
+                         bg=C_SURFACE, fg=C_TEXT, anchor="w").pack(anchor="w")
+                tk.Label(msg_col,
+                         text="Progres sesi yang sedang berjalan akan dihentikan setelah konfirmasi.",
+                         font=("Segoe UI", 8),
+                         bg=C_SURFACE, fg=C_TEXT_DIM,
+                         wraplength=340, justify="left", anchor="w").pack(anchor="w", pady=(2,0))
             else:
                 tk.Label(msg_col,
-                         text="Klik konfirmasi untuk mulai bermain.",
-                         font=("Segoe UI", 9),
-                         bg=C_SURFACE, fg=C_TEXT_DIM, anchor="w").pack(anchor="w")
-
-            # Single confirm button — no cancel to avoid None-username edge case
-            tk.Button(cta_inner,
-                      text=f"✓   Login as @{username.upper()}",
-                      font=("Segoe UI", 10, "bold"),
-                      bg=tc, fg=C_BG,
-                      activebackground="#FFFFFF", activeforeground=C_BG,
-                      relief="flat", cursor="hand2", pady=10,
-                      command=lambda u=username: self.on_select(u)
-                      ).pack(fill="x")
+                         text=f"Masuk sebagai @{username}",
+                         font=("Segoe UI", 9, "bold"),
+                         bg=C_SURFACE, fg=C_TEXT, anchor="w").pack(anchor="w")
+                tk.Label(msg_col,
+                         text="Klik tombol Login di kanan atas kartu profil untuk mulai bermain.",
+                         font=("Segoe UI", 8),
+                         bg=C_SURFACE, fg=C_TEXT_DIM,
+                         wraplength=340, justify="left", anchor="w").pack(anchor="w", pady=(2,0))
 
 
 class SudokuApp:
@@ -7463,6 +7895,14 @@ class SudokuApp:
         self.root.bind_all("<F5>",             self._kiosk_reset)
         self.root.bind_all("<Control-Shift-r>", self._kiosk_reset)
         self.root.bind_all("<Control-Shift-R>", self._kiosk_reset)
+
+        # ── ESC Global — aktif di SEMUA layar ──────────────────────────
+        # bind_all dipakai agar tidak ikut terhapus saat AchievementPopup
+        # memanggil root.unbind("<Escape>") saat menutup dirinya sendiri.
+        # Cooldown 150 ms di _on_esc_global mencegah double-fire saat
+        # AchievementPopup bertransisi sinkron ke PerformanceDashboard.
+        self._last_screen_change = 0.0
+        self.root.bind_all("<Escape>", self._on_esc_global)
 
         # ── Musik ─────────────────────────────────────────────────────
         self._music_ready  = False
@@ -7701,6 +8141,8 @@ class SudokuApp:
     # ── Overlay helpers (theme btn + music hint selalu di atas) ──────
     def _raise_overlay(self):
         """Angkat theme button dan music icon ke paling atas stacking order."""
+        if getattr(self, "_corner_overlay_paused", False):
+            return          # popup sedang tampil — jangan angkat icon dulu
         self._sync_overlay_bg()
         try:
             self.root.tk.call("raise", self._theme_btn._w)
@@ -7727,6 +8169,9 @@ class SudokuApp:
             self._overlay_loop_id = None
 
     def _clear(self):
+        # Catat waktu ganti layar — digunakan oleh _on_esc_global
+        # agar tidak salah tembak saat AchievementPopup bertransisi sinkron.
+        self._last_screen_change = time.time()
         if self.screen:
             try:
                 self.screen.place_forget()
@@ -7991,10 +8436,241 @@ class SudokuApp:
         """
         self._logout()
 
-    def _exit(self, _=None):
-        if messagebox.askyesno("Keluar", "Yakin ingin keluar?", parent=self.root):
+
+    def _show_exit_confirm_global(self):
+        """
+        Popup konfirmasi keluar dengan tampilan yang sama seperti GameScreen._show_exit_confirm.
+        Dipakai oleh _on_esc_global saat screen aktif bukan GameScreen
+        (LoginScreen, GridSizeScreen, dll.) sehingga visual tetap konsisten.
+        Overlay selalu di-mount di self.root agar menutupi seluruh jendela dan
+        blur photo sesuai ukuran penuh (mencegah tampilan 'membesar/geser').
+        """
+        # Jangan buat duplikat popup
+        _popup = getattr(self, "_global_exit_popup", None)
+        if _popup is not None:
+            try:
+                if _popup.winfo_exists():
+                    return
+            except Exception:
+                pass
+
+        # Selalu mount di root — bukan di self.screen — agar:
+        # 1. Overlay menutupi seluruh jendela (bukan hanya area screen saat ini)
+        # 2. Blur photo (ukuran root) cocok persis dengan ukuran overlay
+        parent = self.root
+
+        # ── Ambil blur screenshot SEBELUM overlay dibuat ───────────────────────
+        # Penting: capture SEBELUM overlay.place() agar screenshot tidak menangkap
+        # frame kosong yang baru dibuat (yang akan membuat blur tampak salah).
+        _blur_pre = _grab_blur_bg(self.root)
+
+        overlay = tk.Frame(parent, bg="")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        overlay.lift()
+        self._global_exit_popup = overlay
+
+        # Canvas blur sebagai background — pakai foto yang sudah di-capture sebelumnya
+        dim = _place_blur_canvas(overlay, self.root, pre_captured=_blur_pre)
+
+        # ── Outer glow ring merah + Card terpusat ─────────────────────────────
+        card_bg     = C_SURFACE
+        card_border = C_ERROR
+
+        glow_glob = tk.Frame(overlay, bg=card_border)
+        glow_glob.place(relx=0.5, rely=0.62, anchor="center", width=426, height=236)
+
+        card = tk.Frame(glow_glob, bg=card_bg,
+                        highlightbackground=card_border, highlightthickness=0)
+        card.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # ── Slide-in dari bawah ────────────────────────────────────────────────
+        SLIDE_STEPS_G = 12
+        def _slide_global(step, _glow=glow_glob, _ov=overlay):
+            if not _ov.winfo_exists():
+                return
+            t      = step / SLIDE_STEPS_G
+            t_ease = 1 - (1 - t) ** 3
+            rely_now = 0.62 + (0.5 - 0.62) * t_ease
+            try:
+                _glow.place(rely=rely_now)
+            except Exception:
+                return
+            if step < SLIDE_STEPS_G:
+                _ov.after(16, lambda: _slide_global(step + 1))
+        _slide_global(0)
+
+        # Gradient stripe atas merah -> oranye -> kuning
+        stripe_cv = tk.Canvas(card, height=6, bg=card_bg, highlightthickness=0)
+        stripe_cv.pack(fill="x")
+        def _draw_stripe(cv=stripe_cv):
+            cv.update_idletasks()
+            w = cv.winfo_width() or 420
+            stops = [(0, C_ERROR), (w // 2, C_WARN), (w, "#FFDD55")]
+            steps = 40
+            for i in range(len(stops) - 1):
+                x1, c1 = stops[i]
+                x2, c2 = stops[i + 1]
+                for k in range(steps):
+                    t_  = k / steps
+                    r_  = int(int(c1[1:3], 16) * (1 - t_) + int(c2[1:3], 16) * t_)
+                    g_  = int(int(c1[3:5], 16) * (1 - t_) + int(c2[3:5], 16) * t_)
+                    b_  = int(int(c1[5:7], 16) * (1 - t_) + int(c2[5:7], 16) * t_)
+                    xi  = x1 + k * (x2 - x1) // steps
+                    xj  = x1 + (k + 1) * (x2 - x1) // steps
+                    cv.create_rectangle(xi, 0, xj, 6,
+                                        fill=f"#{r_:02x}{g_:02x}{b_:02x}",
+                                        outline="")
+        stripe_cv.after(60, _draw_stripe)
+
+        # Icon + judul
+        icon_row = tk.Frame(card, bg=card_bg)
+        icon_row.pack(pady=(20, 4))
+        tk.Label(icon_row, text="\U0001f6aa",
+                 font=("Segoe UI", 28), bg=card_bg, fg=C_ERROR).pack(side="left")
+        tk.Label(icon_row, text="Exit Game",
+                 font=("Segoe UI", 17, "bold"),
+                 bg=card_bg, fg=C_TEXT).pack(side="left")
+
+        # Garis tipis
+        tk.Frame(card, height=1, bg=C_BORDER).pack(fill="x", padx=24, pady=(4, 0))
+
+        # Sub-teks
+        tk.Label(card,
+                 text="Apakah Anda yakin ingin menutup program?",
+                 font=("Segoe UI", 10),
+                 bg=card_bg, fg=C_TEXT_DIM,
+                 justify="center").pack(pady=(12, 16))
+
+        # Tombol aksi
+        btn_row = tk.Frame(card, bg=card_bg)
+        btn_row.pack(fill="x", padx=24, pady=(0, 20))
+
+        # ── Pause corner icon loop ─────────────────────────────────────────────
+        _corner_icons_lower()
+
+        def _cancel():
+            _corner_icons_restore()
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            self._global_exit_popup = None
+
+        def _confirm_exit():
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            self._global_exit_popup = None
             self._stop_overlay_loop()
-            self.root.destroy()
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
+        cancel_btn = tk.Button(
+            btn_row,
+            text="Batal",
+            font=("Segoe UI", 10, "bold"),
+            bg=C_SURFACE2, fg=C_TEXT,
+            activebackground=C_BORDER, activeforeground=C_TEXT,
+            relief="flat", cursor="hand2", pady=10,
+            command=_cancel)
+        cancel_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        exit_btn = tk.Button(
+            btn_row,
+            text="Ya, Keluar",
+            font=("Segoe UI", 10, "bold"),
+            bg=C_ERROR, fg="#FFFFFF",
+            activebackground="#FF9999", activeforeground="#FFFFFF",
+            relief="flat", cursor="hand2", pady=10,
+            command=_confirm_exit)
+        exit_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        # Hover efek tombol Batal
+        cancel_btn.bind("<Enter>",
+            lambda _: cancel_btn.config(bg=C_BORDER, fg=C_TEXT))
+        cancel_btn.bind("<Leave>",
+            lambda _: cancel_btn.config(bg=C_SURFACE2, fg=C_TEXT))
+
+        # Klik di luar card -> tutup popup
+        dim.bind("<Button-1>", lambda _: _cancel())
+        overlay.bind("<Button-1>", lambda e: _cancel() if e.widget is overlay else None)
+
+        # ESC lagi -> batal popup
+        # return "break" wajib agar event tidak merambat ke bind_all(_on_esc_global)
+        # yang akan langsung membuka kembali popup yang baru saja dibatalkan.
+        def _on_esc_exit(event=None):
+            _cancel()
+            return "break"
+        overlay.bind("<Escape>", _on_esc_exit)
+        overlay.focus_set()
+
+    def _on_esc_global(self, event=None):
+        """
+        Handler ESC global — aktif di SEMUA layar (bind_all).
+
+        Logika navigasi per tipe screen:
+          LoginScreen         → konfirmasi keluar aplikasi
+          AttractorScreen     → kembali ke login
+          PlayerSelectScreen  → kembali ke game (jika ada state tersimpan) atau ke login
+          GridSizeScreen      → kembali ke login
+          DifficultyScreen    → kembali ke pilih grid
+          GameScreen          → popup konfirmasi kembali ke pilih grid (bukan keluar app)
+          PerformanceDashboard→ kembali ke pilih grid
+          AchievementPopup    → sudah ditangani sendiri, abaikan di sini
+
+        Perlindungan ganda:
+          1. Cooldown 150 ms mencegah double-fire saat AchievementPopup
+             bertransisi sinkron ke screen berikutnya dalam satu event loop.
+          2. Skip jika fokus ada di Entry widget (user sedang mengetik).
+        """
+        # Cooldown — layar baru saja diganti (misal oleh AchievementPopup)
+        if (time.time() - getattr(self, "_last_screen_change", 0)) < 0.15:
+            return
+
+        screen = self.screen
+        if screen is None:
+            return
+
+        # GameScreen: popup konfirmasi kembali ke pilih grid (bukan keluar app)
+        if isinstance(screen, GameScreen):
+            screen._on_esc()
+
+        # AttractorScreen: tutup demo, kembali ke login
+        elif isinstance(screen, AttractorScreen):
+            self._show_login()
+
+        # PlayerSelectScreen: kembali ke game jika ada state, atau ke login
+        elif isinstance(screen, PlayerSelectScreen):
+            if self._ingame_saved_state is not None:
+                self._resume_game_from_player_select()
+            else:
+                self._show_login()
+
+        # GridSizeScreen: kembali ke login
+        elif isinstance(screen, GridSizeScreen):
+            self._show_login()
+
+        # DifficultyScreen: kembali ke pilih grid
+        elif isinstance(screen, DifficultyScreen):
+            self._back_to_grid_select()
+
+        # PerformanceDashboard: kembali ke pilih grid
+        elif isinstance(screen, PerformanceDashboard):
+            self._back_to_grid_select()
+
+        # AchievementPopup: sudah punya binding ESC sendiri di root — abaikan
+        elif isinstance(screen, AchievementPopup):
+            pass
+
+        # LoginScreen (dan fallback): popup konfirmasi keluar bergaya sama
+        else:
+            self._show_exit_confirm_global()
+
+    def _exit(self, _=None):
+        self._show_exit_confirm_global()
 
     # ── Theme toggle helpers ───────────────────────────────────────
     def _draw_theme_btn(self, hover=False):
@@ -8201,19 +8877,19 @@ def _ml_init(self):
     self._stats_scaler  = None
     self._iso_threshold = 0.0
     self._ml_dirty      = True
-    self._hint_rfr      = None   # model hint timer
+    self._hint_rfr      = None   # GradientBoostingRegressor — model Hint Timer
     self._hint_scaler   = None   # scaler hint timer
     # knn best params — di-populate oleh _pretrain_knn / _train_models
     self._knn_best_k       = 3
     self._knn_best_metric  = "euclidean"
     self._knn_best_weights = "uniform"
-    # Load RFR.pkl dari notebook saat init agar predict_next_score siap sejak sesi ke-3
+    # Load Score_Prediction.pkl dari notebook saat init agar predict_next_score siap sejak sesi ke-3
     if SKLEARN_AVAILABLE:
-        _rfr_pkg = _load_pkl(PKL_RFR)
+        _rfr_pkg = _load_pkl(PKL_SCORE)
         if _rfr_pkg is not None:
             self._rfr = _rfr_pkg["model"]
         # Load hint timer model jika sudah ada dari sesi sebelumnya
-        _hint_pkg = _load_pkl(PKL_HINT_RFR)
+        _hint_pkg = _load_pkl(PKL_HINT)
         if _hint_pkg is not None:
             self._hint_rfr    = _hint_pkg["model"]
             self._hint_scaler = _hint_pkg.get("scaler", None)
@@ -8235,14 +8911,14 @@ def _train_ml_models(self, force=False):
         return
     self._ml_dirty = False
 
-    # ── Difficulty Recommender (GBM.pkl dari notebook Model_GBM) ────────────
-    # Load dari GBM.pkl jika ada dan tidak dipaksa retrain.
+    # Difficulty Recommender (Difficulty_Recommender.pkl dari notebook Model_Difficulty_Recommender)
+    # Load dari PKL jika ada dan tidak dipaksa retrain — model yang tersimpan adalah RFC.
     if not force:
-        cached_gbm = _load_pkl(PKL_GBM)
+        cached_gbm = _load_pkl(PKL_DIFF)
         if cached_gbm is not None:
             self._rec_model  = cached_gbm["model"]
             self._rec_scaler = cached_gbm["scaler"]
-        cached_multi = _load_pkl(PKL_MULTI)
+        cached_multi = _load_pkl(PKL_PERFORM)
         if cached_multi is not None:
             self._stats_model  = cached_multi["model"]
             self._stats_scaler = cached_multi["scaler"]
@@ -8252,12 +8928,19 @@ def _train_ml_models(self, force=False):
     # Hitung total sesi nyata dari semua pemain (dipakai untuk ambang proteksi)
     _real_sess_count = sum(len(s) for s in _ml_all_sessions())
 
-    # ── PROTEKSI GBM: jika sesi nyata < 30, pakai model notebook ────────────
-    # GBM notebook dilatih dari 5000 sampel dengan distribusi Beta/Gamma realistis.
+    # ── PROTEKSI RFC: jika sesi nyata < 30, pakai model notebook ────────────
+    # RFC notebook dilatih dari 5000 sampel dengan distribusi Beta/Gamma realistis.
     # Fallback sintetis di sini hanya Uniform — menghasilkan boundary yang terlalu rapi
     # dan training accuracy tinggi palsu yang bisa menimpa model notebook.
-    _cached_gbm_pre = _load_pkl(PKL_GBM)
-    _notebook_gbm_acc = (_cached_gbm_pre or {}).get("accuracy", 0.0)
+    _cached_gbm_pre = _load_pkl(PKL_DIFF)
+    # Ambil metrik referensi dari PKL.
+    # Notebook Model_Difficulty_Recommender menyimpan 'f1_score' (F1 Macro test set).
+    # Retrain internal menyimpan 'f1_score' juga. Fallback ke 'accuracy' untuk
+    # kompatibilitas mundur dengan format PKL lama yang mungkin menyimpan 'accuracy'.
+    _notebook_gbm_acc = (_cached_gbm_pre or {}).get(
+        "f1_score",
+        (_cached_gbm_pre or {}).get("accuracy", 0.0)
+    )
     _protect_gbm = (
         _cached_gbm_pre is not None
         and _real_sess_count < 30
@@ -8306,50 +8989,40 @@ def _train_ml_models(self, force=False):
         y_rec = np.array(y_rec, dtype=int)
         rec_scaler = StandardScaler()
         X_rec_sc = rec_scaler.fit_transform(X_rec)
-        try:
-            from sklearn.ensemble import HistGradientBoostingClassifier
-            from sklearn.model_selection import cross_val_score, StratifiedKFold
-            rec_model = HistGradientBoostingClassifier(
-                max_iter=200,
-                learning_rate=0.10,
-                min_samples_leaf=20,
-                random_state=42,
-                class_weight="balanced",
-            )
-        except Exception:
-            from sklearn.model_selection import cross_val_score, StratifiedKFold
-            rec_model = RandomForestClassifier(
-                n_estimators=180,
-                random_state=42,
-                class_weight="balanced_subsample",
-            )
+        from sklearn.model_selection import cross_val_score, StratifiedKFold
+        # RFC (Random Forest Classifier) — model resmi untuk Difficulty Recommender
+        rec_model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=8,
+            random_state=42,
+            class_weight="balanced_subsample",
+        )
         rec_model.fit(X_rec_sc, y_rec)
 
-        # ── Validasi dengan CV balanced_accuracy (bukan training accuracy) ──
-        # balanced_accuracy cocok untuk data imbalanced dan identik metrik notebook.
-        # Wajib lebih baik dari model notebook agar bisa menyimpan ulang.
+        # ── Validasi dengan CV F1 Macro (bukan training accuracy) ──
+        # # F1 Macro identik dengan metrik notebook — wajib lebih baik agar bisa menyimpan ulang.
         _n_cv = min(5, min(np.bincount(y_rec)), len(np.unique(y_rec)))
         _n_cv = max(2, _n_cv)
-        _cv_ba = cross_val_score(
+        _cv_f1 = cross_val_score(
             rec_model, X_rec_sc, y_rec,
             cv=StratifiedKFold(n_splits=_n_cv, shuffle=True, random_state=42),
-            scoring="balanced_accuracy",
+            scoring="f1_macro",
         )
-        new_gbm_ba = float(_cv_ba.mean())
-        # Hanya update memori DAN simpan PKL jika model baru murni lebih baik.
-        # Jika tidak, tetap pakai model notebook di memori agar prediksi akurat.
-        _save_new_gbm = new_gbm_ba > _notebook_gbm_acc
-        if _save_new_gbm:
+        new_rfc_f1 = float(_cv_f1.mean())
+        # Hanya update memori DAN simpan PKL jika model RFC baru murni lebih baik.
+        # Jika tidak, tetap pakai model notebook RFC di memori agar prediksi akurat.
+        _save_new_rfc = new_rfc_f1 > _notebook_gbm_acc
+        if _save_new_rfc:
             self._rec_model  = rec_model
             self._rec_scaler = rec_scaler
-            _save_pkl(PKL_GBM, {
+            _save_pkl(PKL_DIFF, {
                 "model":    rec_model,
                 "scaler":   rec_scaler,
-                "accuracy": new_gbm_ba,   # simpan CV balanced_accuracy
+                "f1_score": new_rfc_f1,   # simpan CV F1 Macro
                 "meta": {
                     "n_train":    len(X_rec),
                     "n_actual":   _real_sess_count,
-                    "score_type": "cv_balanced_accuracy",
+                    "score_type": "cv_f1_macro",
                 },
             })
         else:
@@ -8361,11 +9034,11 @@ def _train_ml_models(self, force=False):
                 self._rec_model  = rec_model   # tidak ada pilihan lain
                 self._rec_scaler = rec_scaler
 
-    # ── Stats Model (Multioutput_regressor_GBM.pkl dari notebook) ───────────
+    # ── Stats Model (Performance_Prediction.pkl dari notebook) ─────────────
     # Input 8 fitur: [tpc, er, hr, cr, nmr, gur, avg_moves, avg_score]
     # Output 11 target: exp_tpc, exp_er, exp_hr, exp_cr, exp_nmr, exp_gur,
     #                   exp_score, speed_idx, accuracy_idx, consistency_idx, independence_idx
-    _cached_multi_pre = _load_pkl(PKL_MULTI)
+    _cached_multi_pre = _load_pkl(PKL_PERFORM)
     _cached_r2_pre    = _cached_multi_pre.get("r2", 0) if _cached_multi_pre else 0
     # PROTEKSI: lindungi model notebook selama sesi nyata < 100
     # 11 output regresi butuh data yang sangat banyak agar retrain bermakna.
@@ -8416,8 +9089,9 @@ def _train_ml_models(self, force=False):
         Y_stats = np.array(Y_stats, dtype=float)
         stats_scaler = StandardScaler()
         X_stats_sc = stats_scaler.fit_transform(X_stats)
+        # MultiOutputRegressor + HistGBR — model resmi untuk Performance Prediction
         stats_model = MultiOutputRegressor(
-            RandomForestRegressor(n_estimators=160, random_state=42))
+            HistGradientBoostingRegressor(max_iter=200, random_state=42))
         stats_model.fit(X_stats_sc, Y_stats)
 
         # ── Validasi dengan CV R² per-output, rata-rata (bukan training R²) ──
@@ -8430,7 +9104,7 @@ def _train_ml_models(self, force=False):
             _cv_r2_scores = []
             for _tr, _val in _kf.split(X_stats_sc):
                 _m = MultiOutputRegressor(
-                    RandomForestRegressor(n_estimators=60, random_state=42))
+                    HistGradientBoostingRegressor(max_iter=100, random_state=42))
                 _m.fit(X_stats_sc[_tr], Y_stats[_tr])
                 _cv_r2_scores.append(_m.score(X_stats_sc[_val], Y_stats[_val]))
             new_multi_r2 = float(np.mean(_cv_r2_scores))
@@ -8444,7 +9118,7 @@ def _train_ml_models(self, force=False):
         if _save_new_multi:
             self._stats_model  = stats_model
             self._stats_scaler = stats_scaler
-            _save_pkl(PKL_MULTI, {
+            _save_pkl(PKL_PERFORM, {
                 "model":  stats_model,
                 "scaler": stats_scaler,
                 "r2":     new_multi_r2,
@@ -8716,7 +9390,7 @@ def _ml_get_summary(self, session=None):
     # Ambil metadata RFR.pkl untuk ditampilkan jika tersedia
     _rfr_meta = {}
     try:
-        _rfr_pkg = _load_pkl(PKL_RFR)
+        _rfr_pkg = _load_pkl(PKL_SCORE)
         if _rfr_pkg is not None:
             _rfr_meta = {
                 "r2":           _rfr_pkg.get("r2", 0.0),
@@ -8757,93 +9431,157 @@ def _ml_get_summary(self, session=None):
 # ── Hint Timer: training ─────────────────────────────────────────────────────
 def _ml_train_hint_model(self):
     """
-    Latih RandomForestRegressor kecil khusus untuk memprediksi idle threshold.
-    Label = ritme gerakan alami pemain × faktor kesabaran per konteks.
-    Data dari SEMUA pemain agar model lebih general sejak awal.
+    Retrain HintTimer model menggunakan data sesi nyata terbaru.
+
+    Strategi:
+    - Model WAJIB sudah tersedia di PKL_HINT (dilatih dari notebook).
+      Jika belum ada, fungsi ini tidak akan membuat model dari nol.
+    - Retrain hanya dilakukan jika jumlah sesi nyata baru >= 10
+      agar model tidak overfit pada data yang sangat sedikit.
+    - Menggunakan 15 fitur (9 original + 6 engineered) sesuai notebook.
+    - Menyimpan model baru ke PKL hanya jika CV MAE lebih baik dari
+      model yang sudah ada.
     """
     if not SKLEARN_AVAILABLE:
         return
 
+    # ── WAJIB: model notebook harus sudah ada ────────────────────────────────
+    cached_pkg = _load_pkl(PKL_HINT)
+    if cached_pkg is None:
+        # Model belum dibuat dari notebook — tidak ada yang bisa di-retrain
+        return
+
+    # ── Kumpulkan sesi nyata dari semua pemain ────────────────────────────────
     all_player_sessions = _ml_all_sessions()
     flat = [s for player_sess in all_player_sessions for s in player_sess]
-    if len(flat) < 3:
+
+    # Minimal 10 sesi nyata sebelum retrain dilakukan
+    if len(flat) < 10:
+        # Tidak cukup data — pertahankan model notebook di memori
+        if self._hint_rfr is None:
+            self._hint_rfr    = cached_pkg["model"]
+            self._hint_scaler = cached_pkg.get("scaler", None)
         return
 
-    X, y = [], []
-    for s in flat:
-        moves    = max(s.get("moves", 1), 1)
-        total_t  = float(s.get("total_time", 0) or 0)
-        tpc      = float(s.get("time_per_cell", total_t / moves))
-        er       = s.get("errors", 0)     / moves
-        hr       = s.get("hints_used", 0) / moves
-        cr       = 1.0 if s.get("completed", False) else 0.0
+    # ── Bangun feature matrix (15 fitur) dan label ───────────────────────────
+    def _hint_session_to_fv(s):
+        """Konversi 1 sesi → feature vector 15 dimensi."""
+        moves     = max(s.get("moves", 1), 1)
+        total_t   = float(s.get("total_time", 0) or 0)
+        tpc       = float(s.get("time_per_cell", total_t / moves))
+        er        = s.get("errors", 0)     / moves
+        hr        = s.get("hints_used", 0) / moves
+        cr        = 1.0 if s.get("completed", False) else 0.0
         total_err = max(s.get("errors", 0), 1)
-        nmr      = s.get("near_miss", 0)  / total_err
-        gur      = s.get("guessing", 0)   / total_err
-        grid_n   = int(s.get("grid_size", 3)) ** 2
-        diff_int = {"Easy": 0, "Normal": 1, "Hard": 2}.get(
+        nmr       = s.get("near_miss", 0)  / total_err
+        gur       = s.get("guessing", 0)   / total_err
+        grid_n    = float(int(s.get("grid_size", 3)) ** 2)
+        diff_int  = float({"Easy": 0, "Normal": 1, "Hard": 2}.get(
+            s.get("difficulty", "Normal"), 1))
+        # 9 fitur original
+        orig = [tpc, er, hr, cr, nmr, gur, grid_n, diff_int, 0.5]
+        # 6 fitur engineered (sesuai notebook HintTimer_RFR_Improved)
+        log_tpc        = np.log1p(tpc)
+        err_x_hint     = er * hr
+        diff_x_grid    = diff_int * (grid_n / 81.0)
+        hint_pressure  = hr / (cr + 0.01)
+        move_density   = moves / grid_n
+        patience_proxy = (1.0 - er) * cr
+        return orig + [log_tpc, err_x_hint, diff_x_grid,
+                       hint_pressure, move_density, patience_proxy]
+
+    def _hint_label(s):
+        """Label idle threshold (detik) dengan log-smoothing untuk outlier."""
+        moves     = max(s.get("moves", 1), 1)
+        total_t   = float(s.get("total_time", 0) or 0)
+        hr        = s.get("hints_used", 0) / moves
+        grid_n    = int(s.get("grid_size", 3)) ** 2
+        diff_int  = {"Easy": 0, "Normal": 1, "Hard": 2}.get(
             s.get("difficulty", "Normal"), 1)
-
-        # Label: inter-move time × faktor kesabaran kontekstual
-        # Pemain lambat dan grid besar → label tinggi (beri waktu lebih)
-        # Pemain sering hint → label rendah (tawarkan lebih cepat)
-        inter_move   = total_t / moves
-        patience     = 1.5 + diff_int * 0.4 + (grid_n / 81) * 0.6
-        hint_factor  = max(0.5, 1.0 - hr * 0.6)
-        label = max(8.0, min(120.0, inter_move * patience * hint_factor))
-
-        # remaining_pct di-set 0.5 saat training (rata-rata tengah permainan)
-        X.append([tpc, er, hr, cr, nmr, gur, float(grid_n), float(diff_int), 0.5])
-        y.append(label)
-
-    if len(X) < 3:
-        return
+        inter_move  = total_t / moves
+        patience    = 1.5 + diff_int * 0.4 + (grid_n / 81) * 0.6
+        hint_factor = max(0.5, 1.0 - hr * 0.6)
+        raw = inter_move * patience * hint_factor
+        # Log-smoothing: tarik outlier ekstrem ke arah median
+        if raw > 60:
+            raw = 60 + np.log1p(raw - 60) * 10
+        return max(8.0, min(120.0, raw))
 
     try:
-        X_np = np.array(X, dtype=float)
-        y_np = np.array(y, dtype=float)
+        X_np = np.array([_hint_session_to_fv(s) for s in flat], dtype=float)
+        y_np = np.array([_hint_label(s) for s in flat], dtype=float)
 
         scaler = StandardScaler()
         X_sc   = scaler.fit_transform(X_np)
 
-        rfr = RandomForestRegressor(
-            n_estimators=80,
-            max_depth=6,
-            min_samples_leaf=2,
+        # GradientBoostingRegressor (GBR) — model resmi untuk Hint Timer adaptif
+        from sklearn.ensemble import GradientBoostingRegressor
+        from sklearn.model_selection import KFold, cross_val_score
+        model = GradientBoostingRegressor(
+            n_estimators=107,
+            learning_rate=0.069,
+            max_depth=4,
+            min_samples_leaf=6,
+            subsample=0.97,
+            max_features=0.6,
             random_state=42,
-            n_jobs=-1,
         )
-        rfr.fit(X_sc, y_np)
+        model.fit(X_sc, y_np)
 
-        self._hint_rfr    = rfr
-        self._hint_scaler = scaler
-        _save_pkl(PKL_HINT_RFR, {"model": rfr, "scaler": scaler})
+        # ── Validasi CV MAE — hanya simpan jika lebih baik dari model lama ──
+        _old_mae = float(cached_pkg.get("cv_mae_mean", 9999.0))
+        _kf      = KFold(n_splits=min(5, len(X_np)), shuffle=True, random_state=42)
+        _cv      = cross_val_score(model, X_sc, y_np, cv=_kf,
+                                   scoring="neg_mean_absolute_error")
+        new_mae  = float(-_cv.mean())
+
+        if new_mae < _old_mae:
+            self._hint_rfr    = model
+            self._hint_scaler = scaler
+            _save_pkl(PKL_HINT, {
+                "model":        model,
+                "scaler":       scaler,
+                "feature_names": [
+                    "avg_tpc", "error_rate", "hint_rate", "completion_rate",
+                    "near_miss_rate", "guessing_rate", "grid_n", "diff_int",
+                    "remaining_pct", "log_tpc", "err_x_hint", "diff_x_grid",
+                    "hint_pressure", "move_density", "patience_proxy",
+                ],
+                "n_features":   15,
+                "cv_mae_mean":  new_mae,
+                "cv_mae_std":   float(_cv.std()),
+                "n_train":      len(X_np),
+            })
+        else:
+            # Model lama lebih baik — tetap pakai yang dari PKL
+            self._hint_rfr    = cached_pkg["model"]
+            self._hint_scaler = cached_pkg.get("scaler", None)
     except Exception:
-        pass
+        # Fallback: pastikan model notebook tetap aktif di memori
+        if self._hint_rfr is None:
+            self._hint_rfr    = cached_pkg["model"]
+            self._hint_scaler = cached_pkg.get("scaler", None)
 
 
 # ── Hint Timer: prediksi threshold ───────────────────────────────────────────
 def _ml_compute_hint_threshold(self, grid_size=3, difficulty="Normal",
                                 remaining_pct=1.0):
     """
-    Prediksi idle threshold adaptif per-pemain menggunakan RFR hint timer.
+    Prediksi idle threshold adaptif per-pemain menggunakan model HintTimer.
 
-    Fitur (9 dimensi):
-      [avg_tpc, error_rate, hint_rate, completion_rate,
-       near_miss_rate, guessing_rate, grid_n, diff_int, remaining_pct]
+    Fitur (15 dimensi — sesuai notebook HintTimer_RFR_Improved):
+      Original (9): [avg_tpc, error_rate, hint_rate, completion_rate,
+                     near_miss_rate, guessing_rate, grid_n, diff_int, remaining_pct]
+      Engineered (6): [log_tpc, err_x_hint, diff_x_grid,
+                       hint_pressure, move_density, patience_proxy]
 
     Output: detik idle sebelum banner hint muncul (float, 8–120 detik).
-
-    Semakin besar threshold → semakin sabar sistem menunggu sebelum menawarkan hint.
-    Contoh hasil yang wajar:
-      - Pemain Speedrunner 4×4 Easy: ~10 detik
-      - Pemain Careful 9×9 Normal:   ~45 detik
-      - Pemain baru 9×9 Hard:        ~60 detik
+    Jika model PKL belum ada, gunakan estimasi heuristik sebagai fallback.
     """
-    feat          = _orig_pmle_extract(self)
-    avg_tpc       = float(feat.get("avg_time_per_cell", 10.0))
-    error_rate    = float(feat.get("error_rate", 0.0))
-    hint_rate     = float(feat.get("hint_rate", 0.0))
+    feat            = _orig_pmle_extract(self)
+    avg_tpc         = float(feat.get("avg_time_per_cell", 10.0))
+    error_rate      = float(feat.get("error_rate", 0.0))
+    hint_rate       = float(feat.get("hint_rate", 0.0))
     completion_rate = float(feat.get("completion_rate", 0.5))
     near_miss_rate  = float(feat.get("near_miss_rate", 0.0))
     guessing_rate   = float(feat.get("guessing_rate", 0.0))
@@ -8852,34 +9590,57 @@ def _ml_compute_hint_threshold(self, grid_size=3, difficulty="Normal",
     diff_int = float({"Easy": 0, "Normal": 1, "Hard": 2}.get(difficulty, 1))
     rem_pct  = float(max(0.0, min(1.0, remaining_pct)))
 
-    fv = np.array([[avg_tpc, error_rate, hint_rate, completion_rate,
-                    near_miss_rate, guessing_rate, grid_n, diff_int, rem_pct]],
-                   dtype=float)
+    # ── Fitur original (9) ────────────────────────────────────────────────────
+    orig = [avg_tpc, error_rate, hint_rate, completion_rate,
+            near_miss_rate, guessing_rate, grid_n, diff_int, rem_pct]
 
-    # Coba model yang sudah ada di memori
+    # ── Fitur engineered (6) — identik dengan notebook ────────────────────────
+    log_tpc        = float(np.log1p(avg_tpc))
+    err_x_hint     = error_rate * hint_rate
+    diff_x_grid    = diff_int * (grid_n / 81.0)
+    hint_pressure  = hint_rate / (completion_rate + 0.01)
+    # move_density: estimasi dari avg sesi (tidak ada konteks moves saat ini)
+    avg_moves_est  = float(feat.get("avg_moves", grid_n * 1.5))
+    move_density   = avg_moves_est / grid_n
+    patience_proxy = (1.0 - error_rate) * completion_rate
+
+    fv_15 = np.array([orig + [log_tpc, err_x_hint, diff_x_grid,
+                               hint_pressure, move_density, patience_proxy]],
+                      dtype=float)
+    fv_9  = np.array([orig], dtype=float)  # fallback jika model lama (9 fitur)
+
+    def _try_predict(model, scaler, fv_full, fv_short):
+        """Coba prediksi dengan 15 fitur, fallback ke 9 fitur untuk model lama."""
+        try:
+            n_feat = (model.n_features_in_
+                      if hasattr(model, "n_features_in_") else 15)
+            fv = fv_full if n_feat >= 15 else fv_short
+            fv_sc = scaler.transform(fv) if scaler is not None else fv
+            return float(model.predict(fv_sc)[0])
+        except Exception:
+            return None
+
+    # ── Coba model yang sudah ada di memori ───────────────────────────────────
     hint_rfr    = getattr(self, "_hint_rfr",    None)
     hint_scaler = getattr(self, "_hint_scaler", None)
     if hint_rfr is not None:
-        try:
-            fv_sc = hint_scaler.transform(fv) if hint_scaler is not None else fv
-            pred  = float(hint_rfr.predict(fv_sc)[0])
+        pred = _try_predict(hint_rfr, hint_scaler, fv_15, fv_9)
+        if pred is not None:
             return max(8.0, min(120.0, pred))
-        except Exception:
-            pass
 
-    # Fallback: load dari PKL jika belum di-load ke RAM
+    # ── Fallback: load dari PKL jika belum di-load ke RAM ─────────────────────
     try:
-        cached = _load_pkl(PKL_HINT_RFR)
+        cached = _load_pkl(PKL_HINT)
         if cached is not None:
             self._hint_rfr    = cached["model"]
             self._hint_scaler = cached.get("scaler", None)
-            fv_sc = self._hint_scaler.transform(fv) if self._hint_scaler else fv
-            pred  = float(self._hint_rfr.predict(fv_sc)[0])
-            return max(8.0, min(120.0, pred))
+            pred = _try_predict(self._hint_rfr, self._hint_scaler, fv_15, fv_9)
+            if pred is not None:
+                return max(8.0, min(120.0, pred))
     except Exception:
         pass
 
-    # Estimasi langsung dari fitur numerik (bukan per-tipe) ketika model belum ada
+    # ── Heuristik numerik jika PKL belum ada sama sekali ─────────────────────
     base     = max(8.0, avg_tpc * 2.0)
     grid_mul = 1.0 + (grid_n - 4.0) / 77.0 * 0.5    # 4×4→1.0, 9×9→1.5
     diff_mul = 1.0 + diff_int * 0.3                   # Easy→1.0, Normal→1.3, Hard→1.6
@@ -9141,15 +9902,19 @@ def _draw_ach_icon(cv, badge_id, color, w=120, h=68, bg="#0D1117"):
 
 
 class AchievementPopup(tk.Frame):
-    def __init__(self, master, badges, on_done, initial_idx=0):
+    def __init__(self, master, badges, on_done, initial_idx=0,
+                 pre_blur_photo=None):
         super().__init__(master, bg="")
-        self.on_done   = on_done
-        self.badges    = badges
-        self._idx      = initial_idx   # mulai dari badge tertentu (0 = awal)
-        self._after_id = None
-        self._skip_bound = False
+        self.on_done         = on_done
+        self.badges          = badges
+        self._idx            = initial_idx   # mulai dari badge tertentu (0 = awal)
+        self._after_id       = None
+        self._skip_bound     = False
+        self._pre_blur_photo = pre_blur_photo   # screenshot yg diambil sebelum clear
         self.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.lift()
+        # Turunkan icon pojok agar tidak menembus popup
+        _corner_icons_lower()
         self._bind_skip()
         self._show_next()
 
@@ -9164,7 +9929,8 @@ class AchievementPopup(tk.Frame):
             root.bind("<Button-3>",   self._on_skip, add="+")
             root.bind("<space>",      self._on_skip, add="+")
             root.bind("<Return>",     self._on_skip, add="+")
-            root.bind("<Escape>",     self._on_skip_all, add="+")
+            # <Escape> sengaja TIDAK di-bind — ESC tidak boleh berfungsi
+            # saat achievement popup tampil agar tidak bisa dilewati paksa.
         except Exception:
             pass
         self._skip_bound = True
@@ -9172,7 +9938,8 @@ class AchievementPopup(tk.Frame):
     def _unbind_skip(self):
         try:
             root = self.winfo_toplevel()
-            for ev in ("<KeyPress>","<Button-1>","<Button-3>","<space>","<Return>","<Escape>"):
+            for ev in ("<KeyPress>", "<Button-1>", "<Button-3>",
+                       "<space>", "<Return>"):
                 try: root.unbind(ev)
                 except Exception: pass
         except Exception:
@@ -9209,16 +9976,54 @@ class AchievementPopup(tk.Frame):
         total    = len(self.badges)
         current  = self._idx            # sudah di-increment
 
-        _ach_overlay_bg = C_BG
-        self.config(bg=_ach_overlay_bg)
+        self.config(bg=C_BG)
 
-        # Overlay dim (klik di luar card juga skip)
-        overlay = tk.Label(self, bg=_ach_overlay_bg, text="")
-        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        # ── Mainkan SFX achievement ───────────────────────────────────────────
+        _play_sfx(_SFX_ACHIEVEMENT)
 
-        card = tk.Frame(self, bg=C_SURFACE,
-                        highlightbackground=color, highlightthickness=3)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=420, height=248)
+        # ── Blur background ───────────────────────────────────────────────────
+        # Gunakan pre_blur_photo (diambil sebelum screen di-clear) agar tidak hitam
+        try:
+            _root_ref = self.winfo_toplevel()
+        except Exception:
+            _root_ref = None
+
+        blur_lbl = _place_blur_canvas(
+            self, _root_ref,
+            radius=16, darken=0.32,
+            pre_captured=self._pre_blur_photo   # pass foto pre-capture
+        )
+
+        # Klik di area blur (di luar card) → skip badge
+        blur_lbl.bind("<Button-1>", self._on_skip)
+
+        # ── Outer glow ring (frame sedikit lebih besar, warna badge) ─────────
+        glow = tk.Frame(self, bg=color,
+                        highlightbackground=color, highlightthickness=0)
+        glow.place(relx=0.5, rely=0.5, anchor="center", width=428, height=256)
+
+        card = tk.Frame(glow, bg=C_SURFACE,
+                        highlightbackground=color, highlightthickness=2)
+        card.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # ── Animasi slide-in dari bawah ───────────────────────────────────────
+        SLIDE_STEPS = 12
+        _rely_start = 0.62
+        _rely_end   = 0.5
+        def _slide(step):
+            if not self.winfo_exists():
+                return
+            t = step / SLIDE_STEPS
+            # ease-out cubic
+            t_ease = 1 - (1 - t) ** 3
+            rely_now = _rely_start + (_rely_end - _rely_start) * t_ease
+            try:
+                glow.place(rely=rely_now)
+            except Exception:
+                return
+            if step < SLIDE_STEPS:
+                self.after(16, lambda: _slide(step + 1))
+        _slide(0)
 
         # Top bar warna
         tk.Frame(card, bg=color, height=6).pack(fill="x")
@@ -9265,6 +10070,7 @@ class AchievementPopup(tk.Frame):
 
     def _finish(self):
         self._unbind_skip()
+        _corner_icons_restore()   # kembalikan icon pojok ke atas
         try:
             if self._after_id: self.after_cancel(self._after_id)
         except Exception: pass
@@ -10511,6 +11317,10 @@ def _patched_on_finish(self, session, ml):
     earned_badges = [ACHIEVEMENTS[i] for i in earned_ids if i in ACHIEVEMENTS]
 
     if earned_badges:
+        # ── Ambil blur screenshot SEBELUM screen di-clear ─────────────────────
+        # Jika diambil setelah _clear(), root sudah kosong/hitam → background hitam.
+        _blur_photo = _grab_blur_bg(self.root, radius=16, darken=0.32)
+
         # Popup achievement sebelum dashboard
         # _rebuild_fn di-set agar popup muncul kembali jika tema diganti saat popup aktif
         def _reshowpopup():
@@ -10523,11 +11333,14 @@ def _patched_on_finish(self, session, ml):
             self._clear()
             self.screen = AchievementPopup(self.root, earned_badges,
                                            on_done=_show_dashboard,
-                                           initial_idx=resume)
+                                           initial_idx=resume,
+                                           pre_blur_photo=_blur_photo)
             self.root.after(50, self._raise_overlay)
         self._clear()
         self._rebuild_fn = _reshowpopup
-        self.screen = AchievementPopup(self.root, earned_badges, on_done=_show_dashboard)
+        self.screen = AchievementPopup(self.root, earned_badges,
+                                       on_done=_show_dashboard,
+                                       pre_blur_photo=_blur_photo)
         self.root.after(50, self._raise_overlay)
     else:
         _show_dashboard()

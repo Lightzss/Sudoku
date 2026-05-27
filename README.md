@@ -354,7 +354,7 @@ Proyek ini dikembangkan untuk memenuhi kebutuhan:
 |--------|-----------|
 | Penulis | Samuel Lie |
 | Institusi | Universitas Bunda Mulia (UBM) |
-| Program Studi | Teknik Informatika |
+| Program Studi | Data Science |
 | Mata Kuliah | Machine Learning for Intelligence System |
 | Dosen Pengampu | Puguh Hiskiawan, S.Si., M.Si., Ph.D. |
 | Tahun | 2026 |

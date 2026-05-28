@@ -4,7 +4,7 @@
 
 # SUDOKU AI
 
-**Game Sudoku berbasis Python yang ditenagai 6 model Machine Learning terintegrasi untuk menganalisis, memprediksi, dan beradaptasi dengan gaya bermain pemain secara *real-time*.**
+**Game Sudoku berbasis Python menggunakan 6 model Machine Learning terintegrasi untuk menganalisis, memprediksi, dan beradaptasi dengan gaya bermain pemain secara *real-time*.**
 
 <br/>
 

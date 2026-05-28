@@ -99,35 +99,34 @@ Semua data pemain tersimpan persisten di `player_data.json`. Kartu skor diekspor
 ```
 SUDOKU/
 │
-├── Assets/                              # Aset statis yang dimuat saat runtime
-│   ├── easter_egg.mp3                   # Audio tersembunyi (lihat bagian Easter Egg)
-│   ├── easter_egg.mp4                   # Video tersembunyi (butuh opencv-python + Pillow)
-│   ├── logo.png                         # Logo aplikasi di Login, Sidebar, Attractor screen
-│   └── music.mp3                        # Musik latar yang diputar via pygame
+├── Assets/                                  # Aset yang digunakan saat runtime
+│   ├── easter_egg.mp3                       # Audio easter egg
+│   ├── easter_egg.mp4                       # Video easter egg
+│   ├── logo.png                             # Logo aplikasi di Login, Sidebar, Live Demo
+│   └── music.mp3                            # Musik yang diputar menggunakan `pygame`
 │
-├── Card/                                # Dibuat otomatis saat pertama kali dijalankan
-│   └── SudokuAI_{user}_{ts}.png         # File PNG kartu skor yang diekspor (lebar 860px)
+├── Card/                                    # Dibuat otomatis saat pertama kali dijalankan
+│   └── SudokuAI_{user}_{ts}.png             # File PNG score card yang diekspor (lebar 860px)
 │
 ├── Models/
-│   └── Files/                           # File biner model terlatih
-│       ├── Detect_Anomaly.pkl           # IsolationForest + StandardScaler
-│       ├── Difficulty_Recommender.pkl   # RandomForestClassifier + StandardScaler
-│       ├── Hint_Timer.pkl               # GradientBoostingRegressor + StandardScaler
-│       ├── Performance_Prediction.pkl   # MultiOutputRegressor(HistGBR) + StandardScaler
-│       ├── Player_Classifier.pkl        # KNeighborsClassifier + StandardScaler
-│       └── Score_Prediction.pkl         # HistGradientBoostingRegressor (tanpa scaler)
+│   └── Files/                               # File model
+│       ├── Detect_Anomaly.pkl               # IsolationForest + StandardScaler
+│       ├── Difficulty_Recommender.pkl       # RandomForestClassifier + StandardScaler
+│       ├── Hint_Timer.pkl                   # GradientBoostingRegressor + StandardScaler
+│       ├── Performance_Prediction.pkl       # MultiOutputRegressor(HistGBR) + StandardScaler
+│       ├── Player_Classifier.pkl            # KNeighborsClassifier + StandardScaler
+│       └── Score_Prediction.pkl             # HistGradientBoostingRegressor (tanpa scaler)
+│   ├── Model_Anomaly_Detection.ipynb        # Notebook untuk membuat model IsolationForest
+│   ├── Model_Classify_Player.ipynb          # Notebook untuk membuat model KNN dengan GridSearchCV
+│   ├── Model_Difficulty_Recommender.ipynb   # Notebook untuk membuat model RFC vs HistGBR
+│   ├── Model_Hint_Timer.ipynb               # Notebook untuk membuat model GBR dengan feature engineering
+│   ├── Model_Performance_Prediction.ipynb   # Notebook untuk membuat model MultiOutputRegressor
+│   └── Model_Score_Prediction.ipynb         # Notebook untuk membuat model RFR vs XGB vs LGBM vs HistGBR
 │
-├── Model_Anomaly_Detection.ipynb        # Notebook pelatihan: IsolationForest
-├── Model_Classify_Player.ipynb          # Notebook pelatihan: KNN dengan GridSearchCV
-├── Model_Difficulty_Recommender.ipynb   # Notebook pelatihan: RFC vs HistGBR head-to-head
-├── Model_Hint_Timer.ipynb               # Notebook pelatihan: GBR dengan feature engineering
-├── Model_Performance_Prediction.ipynb   # Notebook pelatihan: MultiOutputRegressor
-├── Model_Score_Prediction.ipynb         # Notebook pelatihan: RFR vs XGB vs LGBM vs HistGBR
-│
-├── player_data.json                     # Dibuat otomatis: basis data pemain persisten
-├── requirements.txt                     # Dependensi Python
-├── README.md                            # File ini
-└── Sudoku.py                            # Titik masuk aplikasi utama (satu file tunggal)
+├── player_data.json                         # Dibuat otomatis untuk menyimpan data pemain
+├── requirements.txt                         # Library yang dibutuhkan
+├── README.md                                # File ini
+└── Sudoku.py                                # Code utama
 ```
 
 ---

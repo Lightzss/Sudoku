@@ -1,370 +1,420 @@
-# Sudoku AI
+<div align="center">
 
-> **Game Sudoku berbasis Python dengan sistem Kecerdasan Buatan adaptif**  
-> *A Python-based Sudoku game powered by an adaptive Artificial Intelligence system*
+<img src="Assets/logo.png" alt="Sudoku AI Logo" width="120" />
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)
-![scikit-learn](https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?style=flat&logo=scikit-learn&logoColor=white)
-![pygame](https://img.shields.io/badge/pygame-2.5%2B-00B140?style=flat)
-![Pillow](https://img.shields.io/badge/Pillow-10%2B-8A2BE2?style=flat)
-![Version](https://img.shields.io/badge/version-1.0.0-58A6FF?style=flat)
-![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-FF7B7B?style=flat)
+# SUDOKU AI
 
----
+**Game Sudoku berbasis Python yang ditenagai 6 model Machine Learning terintegrasi untuk menganalisis, memprediksi, dan beradaptasi dengan gaya bermain pemain secara *real-time*.**
 
-## Daftar Isi / Table of Contents
+<br/>
 
-- [Tentang Proyek](#tentang-proyek)
-- [Fitur Unggulan](#fitur-unggulan)
-- [Model Machine Learning](#model-machine-learning)
-- [Struktur Proyek](#struktur-proyek)
-- [Persyaratan Sistem](#persyaratan-sistem)
-- [Instalasi](#instalasi)
-- [Cara Menjalankan](#cara-menjalankan)
-- [Panduan Penggunaan](#panduan-penggunaan)
-- [Data Pemain](#data-pemain)
-- [Mode Demo](#mode-demo)
-- [Kredit Akademik](#kredit-akademik)
-- [Hak Cipta](#hak-cipta)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![scikit-learn](https://img.shields.io/badge/scikit--learn-1.3%2B-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
+[![pygame](https://img.shields.io/badge/pygame-2.5%2B-1A1A2E?style=for-the-badge&logo=pygame&logoColor=white)](https://pygame.org)
+[![Pillow](https://img.shields.io/badge/Pillow-10.0%2B-11557C?style=for-the-badge&logo=python&logoColor=white)](https://pillow.readthedocs.io)
+[![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-red?style=for-the-badge)](./README.md)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge)](./README.md)
+[![Version](https://img.shields.io/badge/Version-1.0.0-brightgreen?style=for-the-badge)](./README.md)
+
+</div>
 
 ---
 
-## Tentang Proyek
+## 🧩 ***About Project***
 
-**Sudoku AI** adalah aplikasi permainan Sudoku berbasis Python yang mengintegrasikan enam model *Machine Learning* untuk menciptakan pengalaman bermain yang adaptif dan personal. Setiap sesi pemain dianalisis secara real-time oleh AI engine untuk menentukan tipe pemain, merekomendasikan tingkat kesulitan, memprediksi skor, mendeteksi perilaku anomali, dan memutuskan kapan waktu yang tepat untuk memberikan petunjuk.
+**Sudoku AI** adalah game Sudoku desktop lengkap yang dibangun sepenuhnya dengan Python, mengintegrasikan *pipeline* 6 model *Machine Learning* langsung ke dalam alur permainan. Program ini membuat *puzzle* melalui algoritma *backtracking* acak, mencatat setiap aksi pemain selama sesi berlangsung, lalu mengumpankan data tersebut ke rangkaian model *sklearn* yang mengklasifikasikan tipe pemain, memprediksi skor berikutnya, mendeteksi sesi tidak wajar, merekomendasikan tingkat kesulitan, membangun profil kemampuan 11 dimensi, serta menghitung timer hint adaptif. Seluruh proses itu berjalan di *background thread* tanpa mengganggu jalannya game.
 
-Proyek ini dibangun di atas arsitektur OOP dengan lebih dari 8.000 baris kode Python murni menggunakan `tkinter` sebagai antarmuka grafis utama, `pygame` untuk sistem audio, dan `Pillow` untuk pembuatan *score card* PNG.
+Antarmuka dibangun dengan `tkinter` dan dilengkapi dua tema (Dark theme / Light theme), animasi latar partikel bergerak, efek suara yang dibuat menggunakan `NumPy` dan `pygame`, tampilan *Leaderboard* dengan animasi blur, *Performance Dashboard* yang dapat di-*scroll* dengan grafik `matplotlib` interaktif, *Draft Mode* sistem *draft mode* untuk tingkat kesulitan Hard, serta *AI Solver* yang memutar ulang langkah *MRV Backtracking* secara animasi di layar.
 
----
-
-## Fitur Unggulan
-
-### Gameplay
-- **Dua ukuran grid**, yaitu 4x4 (pemula) dan 9x9 (standar)
-- **Tiga tingkat kesulitan**, yaitu Easy, Normal, Hard dengan puzzle generator berbasis backtracking + MRV
-- **Multi-player login**, baik sistem akun lokal maupun riwayat sesi tersimpan per pemain
-- **Auto-solve**, yaitu fitur bantuan penyelesaian otomatis dengan animasi
-- **Hint adaptif**, artinya petunjuk diberikan secara cerdas berdasarkan kondisi pemain saat ini
-- **Timer sesi** dan kalkulasi skor berlapis (kecepatan, akurasi, penalti hint)
-
-### User Interface
-- **Dua tema visual**, yaitu Dark (default) dan Light, dapat diganti kapan saja
-- **Blur overlay**, berupa efek *frosted glass* di setiap popup menggunakan `PIL.ImageFilter`
-- **Animated background**, yaitu partikel dinamis pada layar utama
-- **Tooltip** informatif di seluruh kontrol
-- **Tutorial overlay** interaktif untuk pemain baru
-
-### Sistem Pencapaian (20 Badge)
-Pencapaian dikelompokkan dalam 6 tier:
-
-| Tier | Kategori | Contoh Badge |
-|------|----------|--------------|
-| 1 | First Steps | First Win, Marathon (10 sesi), Veteran (25 sesi) |
-| 2 | Streak | Consistent (3x), Unbeatable (5x), Serial Winner (7x) |
-| 3 | Speed | Lightning (4x4 <60s), Speed Demon (9x9 <5 menit) |
-| 4 | Accuracy | No Hints, Flawless, Perfect (tanpa error dan hint) |
-| 5 | Difficulty | Hard Expert, Iron Will, Master 9x9, Explorer |
-| 6 | Score | Genius (>800), Expert (Hard >500) |
-
-### Score Card & Performa
-- **Score Card PNG**, yaitu kartu skor bergaya visual tinggi yang dapat disimpan ke folder `Card/`
-- **Performance Dashboard**, yaitu grafik dan statistik sesi dengan analisis mendalam dari ML engine
-- **Achievement Popup** berupa animasi penghargaan setelah sesi selesai
-
-### Audio
-- Musik latar MP3 dengan kontrol on/off
-- **SFX Engine programatik** dengan enam efek suara unik (correct, error, win, achievement, select, hover, click) dibuat secara generatif menggunakan `pygame` tanpa file audio eksternal
-
-### Easter Egg
-Klik judul aplikasi sebanyak 7 kali untuk mengaktifkan overlay video tersembunyi (membutuhkan `opencv-python`).
+Semua data pemain tersimpan persisten di `player_data.json`. Kartu skor diekspor sebagai gambar PNG ke folder `Card/` menggunakan `Pillow`.
 
 ---
 
-## Model Machine Learning
+## ✨ ***Key Features***
 
-Seluruh model dilatih menggunakan data sintetis berlabel dan disimpan dalam format `.pkl`. Model di-*load* saat startup dan di-*retrain* secara inkremental di latar belakang setiap kali sesi baru selesai (*continuous learning*).
+### 🎮 ***Game Features***
 
-### Ringkasan Model
+- ***Two grid sizes*** : 4x4 (box 2x2, angka 1 hingga 4) dan 9x9 (box 3x3, angka 1 hingga 9)
+- ***Three difficulty levels*** : Easy (35% sel dikosongkan), Normal (50% dikosongkan), Hard (65% dikosongkan)
+- ***Heart system*** : Setiap pemain memulai dengan N percobaan. Easy/Normal maksimal 5 error, Hard maksimal 3 *error*, bersifat adaptif berdasarkan tipe pemain
+- ***Draft Mode*** (Hard only) : Sistem kandidat pensil dengan notasi sudut 9 posisi, *auto-fill* kandidat (⚡ Auto), konfirmasi *naked-single*, dan eliminasi kandidat otomatis setelah konfirmasi
+- ***MRV Backtracking AI Solver*** : Animasi penyelesaian *step-by-step* menggunakan algortima *backtracking* dengan fungsi heuristik *Minimum Remaining Values* (MRV) dan *Forward Checking*
+- ***Dark / Light theme*** : Sistem pemilihan tampilan antara tema gelap dan terang
+- ***Animated background*** : 35 partikel mengambang yang dirender dalam *loop Canvas* setiap 50ms
+- ***Procedural sound effects*** : 7 SFX dibuat menggunakan `NumPy` (`correct`, `error`, `win`, `achievement`, `select`, `hover`, `click`)
+- ***Background music*** : Diputar dari `Assets/music.mp3` menggunakan `pygame`
+- ***Attractor / Demo screen*** : Aktif otomatis setelah 30 detik *idle* pada tampilan login, menampilkan *AI solver* langsung, panel statistik global, dan kartu fitur ML
+- ***Tutorial overlay*** : Muncul otomatis di game pertama pemain baru dan tidak akan muncul lagi
+- ***20 achievement badges*** : Tersusun dalam 6 bagian yaitu `First Steps`, `Streak`, `Speed`, `Accuracy`, `Difficulty`, dan `Score`
+- ***Leaderboard*** : *Overlay slide-up* dengan blur latar, bisa difilter berdasarkan ukuran grid (4x4 / 9x9) dan difficulty (Semua / Easy / Normal / Hard), menampilkan top-25 dengan `highlight` medali
+- ***Score card export*** : Kartu PNG selebar 860px tersimpan di `Card/SudokuAI_{username}_{timestamp}.png`
+- ***Multi-player profiles*** : Setiap *username* memiliki riwayat sesi, pencapaian, dan *state ML* yang independen
+- ***Score formula*** : Multi-variable: `(time_score - error_penalty - behavior_penalty - hint_penalty - auto_penalty) x difficulty_multiplier` dengan pengali Easy=1.0, Normal=1.8, Hard=3.0
+- ***Near-miss and guessing detection*** : *Error* pertama pada satu sel dicatat sebagai *near-miss*, error berulang pada sel yang sama ditandai sebagai perilaku *guessing*
 
-| File `.pkl` | Notebook Pelatihan | Algoritma | Task | Input | Output |
-|---|---|---|---|---|---|
-| `Player_Classifier.pkl` | `Model_Classify_Player.ipynb` | KNN + StandardScaler | Multiclass Classification | 6 fitur sesi | 5 tipe pemain |
-| `Score_Prediction.pkl` | `Model_Score_Prediction.ipynb` | HistGradientBoostingRegressor | Regression | 4 fitur sesi | Prediksi skor |
-| `Detect_Anomaly.pkl` | `Model_Anomaly_Detection.ipynb` | IsolationForest | Unsupervised Anomaly Detection | 6 fitur sesi | Normal / Anomali |
-| `Difficulty_Recommender.pkl` | `Model_Difficulty_Recommender.ipynb` | RandomForestClassifier | Multiclass Classification | 8 fitur agregat | Easy / Normal / Hard |
-| `Performance_Prediction.pkl` | `Model_Performance_Prediction.ipynb` | MultiOutputRegressor (HistGBR) | Multi-output Regression | 8 fitur sesi | 11 target metrik |
-| `Hint_Timer.pkl` | `Model_Hint_Timer.ipynb` | RandomForestRegressor | Regression | Fitur sesi + konteks | Threshold waktu hint |
 
-### Fitur Input (Feature Vector)
+### 🤖 ***AI / ML Features***
 
-Semua model menggunakan subset dari 8 fitur utama berikut:
-
-| Fitur | Simbol | Deskripsi |
-|-------|--------|-----------|
-| `avg_time_per_cell` | `tpc` | Rata-rata detik per sel yang dikerjakan |
-| `error_rate` | `er` | Proporsi langkah yang salah terhadap total langkah |
-| `hint_rate` | `hr` | Proporsi hint yang digunakan terhadap total langkah |
-| `completion_rate` | `cr` | 1.0 = puzzle selesai, 0.0 = tidak selesai |
-| `near_miss_rate` | `nmr` | Rasio *hampir benar* terhadap total error |
-| `guessing_rate` | `gur` | Rasio tebak-acak terhadap total error |
-| `avg_moves` | - | Rata-rata total langkah per sesi |
-| `avg_score` | - | Rata-rata skor per sesi |
-
-### Tipe Pemain
-
-Model klasifikasi membagi pemain ke dalam 5 kategori:
-
-| Label | Tipe | Karakteristik |
-|-------|------|---------------|
-| 0 | **Speedrunner** | Cepat, akurat tinggi, hampir tidak pernah pakai hint |
-| 1 | **Careful** | Lambat dan sangat teliti, jarang salah |
-| 2 | **Learner** | Performa moderat, sedang berkembang |
-| 3 | **Struggling** | Banyak error dan hint, jarang menyelesaikan puzzle |
-| 4 | **Inconsistent** | Variansi tinggi antar sesi, pola tidak menentu |
-
-### Anomali yang Dideteksi
-
-Model `IsolationForest` (unsupervised) mendeteksi pola mencurigakan:
-
-| Pola Anomali | Ciri Khas |
-|---|---|
-| *Cheat Speed* | Selesai sangat cepat dengan nol error |
-| *Hint Abuse* | Penggunaan hint di atas 70% dari seluruh langkah |
-| *Impossible Combo* | Error sangat tinggi tetapi puzzle tetap selesai |
-| *Idle Session* | AFK panjang tanpa progres berarti |
-| *Corrupted Data* | Nilai metrik yang saling kontradiktif |
+- ***KNN Player Classifier*** : Mengklasifikasikan riwayat sesi ke dalam 5 tipe pemain beserta persentase keyakinannya 
+- ***HistGradientBoosting Score Predictor*** : Memprediksi skor yang akan dicapai pemain di sesi berikutnya berdasarkan tren terbaru
+- ***IsolationForest Anomaly Detector*** : Mendeteksi sesi yang menyimpang secara signifikan dari pola normal pemain
+- ***RandomForest Difficulty Recommender*** : Merekomendasikan Easy / Normal / Hard beserta alasannya, ditampilkan sebagai badge AI pada tampilan *Difficulty Selection*
+- ***MultiOutputRegressor Performance Profiler*** : Memprediksi 11 dimensi kemampuan sekaligus (`speed index`, `accuracy index`, `consistency index`, `independence index`, dan 7 target metrik mentah)
+- ***GradientBoosting Hint Timer*** : Menghitung ambang batas *idle* adaptif (8 hingga 120 detik) sebelum *hint* ditawarkan, menggunakan 15 fitur terrekayasa termasuk `log_tpc`, `err_x_hint`, `hint_pressure`, dan `patience_proxy`
+- ***Continuous learning*** : Model dilatih ulang di *background daemon thread* setelah setiap sesi selesai menggunakan `player_data.json` terbaru, dan hanya disimpan jika CV score baru mengalahkan model sebelumnya
+- ***PKL cache warming*** : Setiap file `.pkl` di-*preload* ke RAM saat *startup* untuk inferensi instan
+- ***Rule-based fallback*** : Jika `sklearn` tidak tersedia atau data tidak cukup, setiap model diganti dengan aturan deterministik
+- ***Live analysis panel*** : Tekan tombol `I` selama permainan untuk melihat *output ML* secara *real-time*
 
 ---
 
-## Struktur Proyek
+## 🧠 ***AI Model Architecture***
+
+| File Model | Algoritma | Fitur Input | Fungsi dalam Game |
+|---|---|---|---|
+| `Player_Classifier.pkl` | KNeighborsClassifier + StandardScaler | 6 fitur: `avg_time_per_cell`, `error_rate`, `hint_rate`, `completion_rate`, `near_miss_rate`, `guessing_rate` | Mengklasifikasikan pemain ke dalam `Speedrunner` / `Careful` / `Learner` / `Struggling` / `Inconsistent` beserta persentase keyakinannya. Ditampilkan pada *Dashboard* dan *Difficulty Selection*. Dilatih dari 2.500 sampel sintetis (500 per kelas). |
+| `Score_Prediction.pkl` | HistGradientBoostingRegressor | 4 fitur: `session_idx`, `time_per_cell`, `error_rate`, `hint_rate` | Memprediksi skor yang akan diraih pemain di sesi berikutnya. Ditampilkan di *Performance Dashboard*. Membutuhkan minimal 3 sesi. Dibandingkan dengan RFR, XGBoost, dan LightGBM saat pelatihan. HistGBR terpilih sebagai pemenang. |
+| `Detect_Anomaly.pkl` | IsolationForest + StandardScaler | 6 fitur yang sama dengan *classifier* | Mendeteksi sesi dengan pola tidak wajar (misalnya penyelesaian terlalu cepat atau penggunaan *hint* ekstrem). `contamination=0.05`. *Threshold* diatur dari evaluasi *notebook*. Hasil ditampilkan di *Dashboard* sebagai `Normal` / `Anomali` / `Tidak Diketahui`. |
+| `Difficulty_Recommender.pkl` | RandomForestClassifier + StandardScaler | 8 fitur agregat: `tpc`, `er`, `hr`, `cr`, `nmr`, `gur`, `avg_moves`, `avg_score` | Merekomendasikan tingkat kesulitan berikutnya (Easy=0 / Normal=1 / Hard=2). Ditampilkan sebagai *badge* AI di layar *Difficulty Selection*. Dibandingkan *head-to-head* dengan HistGradientBoostingClassifier saat *training*. Data sintetis menggunakan distribusi Beta/Gamma dengan label *noise* 15%. |
+| `Performance_Prediction.pkl` | MultiOutputRegressor(HistGradientBoostingRegressor) + StandardScaler | 8 fitur sesi | Memprediksi 11 target sekaligus: `exp_tpc`, `exp_er`, `exp_hr`, `exp_cr`, `exp_nmr`, `exp_gur`, `exp_score`, `speed_idx`, `accuracy_idx`, `consistency_idx`, `independence_idx`. Empat indeks kemampuan (0 hingga 100) menggerakkan progress bar animasi di *Dashboard*. |
+| `Hint_Timer.pkl` | GradientBoostingRegressor + StandardScaler | 15 fitur: 9 dasar + `log_tpc`, `err_x_hint`, `diff_x_grid`, `hint_pressure`, `move_density`, `patience_proxy` | Menghitung *threshold idle* adaptif dalam detik sebelum *hint* ditawarkan. batasi hanya dalam rentang 8-120 detik. Dilatih dengan `n_estimators=107`, `learning_rate=0.069`, `max_depth=4`. |
+
+<details>
+<summary><strong>Player Type Definitions</strong></summary>
+
+| Tipe | Warna | Karakteristik |
+|---|---|---|
+| ⚡ `Speedrunner` | Emas | Waktu per sel rendah (maks 4 detik), *error rate* di bawah 5%, jarang memakai *hint* |
+| 🧩 `Careful` | Hijau | Waktu per sel tinggi (minimal 14 detik), sangat akurat, jarang memakai *hint* |
+| 📚 `Learner` | Biru | Kecepatan dan *error* moderat, penggunaan *hint* moderat |
+| 💪 `Struggling` | Merah | *Error* rate tinggi (di atas 30%) atau *hint rate* tinggi (di atas 35%), *completion rate* rendah |
+| 🎲 `Inconsistent` | Oranye | Variansi timing tinggi, metrik campuran tidak konsisten |
+
+</details>
+
+---
+
+## 📁 ***Folder Structure***
 
 ```
 SUDOKU/
-├── Assets/
-│   ├── logo.png              # Logo aplikasi
-│   ├── music.mp3             # Musik latar permainan
-│   ├── easter_egg.mp3        # Audio easter egg
-│   └── easter_egg.mp4        # Video easter egg (butuh opencv-python)
+│
+├── Assets/                              # Aset statis yang dimuat saat runtime
+│   ├── easter_egg.mp3                   # Audio tersembunyi (lihat bagian Easter Egg)
+│   ├── easter_egg.mp4                   # Video tersembunyi (butuh opencv-python + Pillow)
+│   ├── logo.png                         # Logo aplikasi di Login, Sidebar, Attractor screen
+│   └── music.mp3                        # Musik latar yang diputar via pygame
+│
+├── Card/                                # Dibuat otomatis saat pertama kali dijalankan
+│   └── SudokuAI_{user}_{ts}.png         # File PNG kartu skor yang diekspor (lebar 860px)
 │
 ├── Models/
-│   └── Files/
-│       ├── Detect_Anomaly.pkl
-│       ├── Difficulty_Recommender.pkl
-│       ├── Hint_Timer.pkl
-│       ├── Performance_Prediction.pkl
-│       ├── Player_Classifier.pkl
-│       └── Score_Prediction.pkl
+│   └── Files/                           # File biner model terlatih
+│       ├── Detect_Anomaly.pkl           # IsolationForest + StandardScaler
+│       ├── Difficulty_Recommender.pkl   # RandomForestClassifier + StandardScaler
+│       ├── Hint_Timer.pkl               # GradientBoostingRegressor + StandardScaler
+│       ├── Performance_Prediction.pkl   # MultiOutputRegressor(HistGBR) + StandardScaler
+│       ├── Player_Classifier.pkl        # KNeighborsClassifier + StandardScaler
+│       └── Score_Prediction.pkl         # HistGradientBoostingRegressor (tanpa scaler)
 │
-├── Model_Anomaly_Detection.ipynb       # Training: IsolationForest
-├── Model_Classify_Player.ipynb         # Training: KNN Classifier
-├── Model_Difficulty_Recommender.ipynb  # Training: RFC / HistGBR
-├── Model_Hint_Timer.ipynb              # Training: RandomForestRegressor
-├── Model_Performance_Prediction.ipynb  # Training: MultiOutputRegressor
-├── Model_Score_Prediction.ipynb        # Training: HistGBR / XGB / LGBM
+├── Model_Anomaly_Detection.ipynb        # Notebook pelatihan: IsolationForest
+├── Model_Classify_Player.ipynb          # Notebook pelatihan: KNN dengan GridSearchCV
+├── Model_Difficulty_Recommender.ipynb   # Notebook pelatihan: RFC vs HistGBR head-to-head
+├── Model_Hint_Timer.ipynb               # Notebook pelatihan: GBR dengan feature engineering
+├── Model_Performance_Prediction.ipynb   # Notebook pelatihan: MultiOutputRegressor
+├── Model_Score_Prediction.ipynb         # Notebook pelatihan: RFR vs XGB vs LGBM vs HistGBR
 │
-├── Sudoku.py                 # Entry point utama aplikasi
-├── README.md
-├── requirements.txt
-│
-├── player_data.json          # (dibuat otomatis) Data sesi semua pemain
-└── Card/                     # (dibuat otomatis) Score card PNG per pemain
-    └── <username>_<timestamp>.png
+├── player_data.json                     # Dibuat otomatis: basis data pemain persisten
+├── requirements.txt                     # Dependensi Python
+├── README.md                            # File ini
+└── Sudoku.py                            # Titik masuk aplikasi utama (satu file tunggal)
 ```
 
 ---
 
-## Persyaratan Sistem
+## ⚙️ ***Installation and Running***
 
-- **Python** 3.10 atau lebih baru
-- **OS** : Windows 10/11, macOS 12+, atau Linux (Ubuntu 20.04+)
-- **RAM** : minimal 512 MB
-- `tkinter` sudah termasuk dalam instalasi Python standar
+### *Prerequisites*
 
----
+- Python 3.10+
+- pip
 
-## Instalasi
-
-### 1. Clone repositori
+### Langkah 1 - *Clone* atau unduh proyek
 
 ```bash
-git clone https://github.com/<username>/sudoku-ai.git
+git clone https://github.com/your-username/sudoku-ai.git
 cd sudoku-ai
 ```
 
-### 2. Buat virtual environment (disarankan)
-
-```bash
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# macOS / Linux
-source venv/bin/activate
-```
-
-### 3. Install dependensi runtime
-
-```bash
-pip install numpy scikit-learn pygame Pillow matplotlib
-```
-
-Atau gunakan `requirements.txt` (sudah mencakup dependensi notebook):
+### Langkah 2 - Instal dependensi
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. (Opsional) Aktifkan easter egg video
+Library yang diinstal dari `requirements.txt`:
 
-```bash
-pip install opencv-python
+```
+numpy>=1.24.0
+scikit-learn>=1.3.0
+pygame>=2.5.0
+Pillow>=10.0.0
+matplotlib>=3.7.0
+opencv-python>=4.8.0
+pandas>=2.0.0
+seaborn>=0.12.0
+scipy>=1.11.0
+xgboost>=1.7.0
+lightgbm>=4.0.0
+notebook>=7.0.0
+ipykernel>=6.0.0
 ```
 
-### 5. Pastikan file model tersedia
+> `opencv-python` dan `tkinter` bersifat opsional saat runtime. Game tetap berjalan dengan baik meski salah satunya tidak tersedia. `tkinter` sudah dibundel di sebagian besar distribusi Python. Di Linux mungkin perlu menjalankan `sudo apt install python3-tk`.
 
-Pastikan enam file `.pkl` ada di folder `Models/Files/`. Jika belum ada, jalankan masing-masing notebook pelatihan terlebih dahulu (lihat bagian [Training Ulang Model](#training-ulang-model)).
-
----
-
-## Cara Menjalankan
+### Langkah 3 - Jalankan game
 
 ```bash
 python Sudoku.py
 ```
 
-Saat startup, konsol akan menampilkan status dependensi dan kondisi setiap model:
+Sebuah startup check akan tercetak di terminal, menampilkan library dan file model yang terdeteksi:
 
 ```
 ====================================================
   Sudoku AI  v1.0.0
-  Mode    : NORMAL
-  sklearn : tersedia
-  pygame  : tersedia
-  PIL     : tersedia
-  cv2     : tersedia
+  sklearn : Available
+  pygame  : Available
+  PIL     : Available
+  cv2     : Available
 ----------------------------------------------------
-  [OK  ] Player_Classifier
-  [OK  ] Score_Prediction
-  [OK  ] Detect_Anomaly
-  [OK  ] Difficulty_Recommender
-  [OK  ] Performance_Prediction
-  [OK  ] Hint_Timer
+[READY]   Player Classifier Model
+[READY]   Score Prediction Model
+[READY]   Anomaly Detection Model
+[READY]   Difficulty Recommender Model
+[READY]   Performance Prediction Model
+[READY]   Hint Timer Model
 ====================================================
 ```
 
-Jika ada model yang `[MISS]`, aplikasi tetap berjalan dengan prediksi *fallback* bawaan.
+### Langkah 4 - (Opsional) *Retraining* model
+
+Buka notebook mana saja di Jupyter lalu jalankan semua sel. Setiap notebook menyimpan outputnya ke `Models/Files/` secara otomatis.
+
+```bash
+jupyter notebook
+```
 
 ---
 
-## Panduan Penggunaan
+## 🕹️ ***How to Play***
 
-1. **Login / Daftar** : Masukkan nama pengguna pada layar awal. Akun baru dibuat otomatis.
-2. **Pilih Ukuran Grid** : 4x4 untuk sesi cepat, 9x9 untuk tantangan penuh.
-3. **Pilih Kesulitan** : AI akan merekomendasikan tingkat yang sesuai berdasarkan riwayat Anda.
-4. **Bermain** : Klik sel, ketik angka. Tekan `Hint` jika butuh bantuan.
-5. **Selesai** : Lihat Achievement Popup (jika ada badge baru), kemudian Performance Dashboard.
-6. **Score Card** : Simpan kartu skor sebagai PNG dari layar hasil akhir.
+### Alur Permainan
+
+```
+*Login Screen*  →  *Grid Selection* (4x4 / 9x9)  →  *Difficulty Selection*  →  *Game*  →  *Performance Dashboard*
+```
 
 ### Kontrol Keyboard
 
 | Tombol | Fungsi |
-|--------|--------|
-| `1-9` / `1-4` | Input angka ke sel yang dipilih |
-| `Delete` / `Backspace` | Hapus angka di sel aktif |
-| `Arrow Keys` | Navigasi antar sel |
-| `H` | Minta hint |
+|---|---|
+| `1` hingga `9` | Memasukkan angka ke sel yang dipilih |
+| `Backspace` / `Delete` | Menghapus isi sel yang dipilih |
+| `Tombol Panah` | Memindahkan seleksi antar sel |
+| `D` | Mulai *Draft Mode* (khusus difficulty Hard) |
+| `Enter` / `Space` | Konfirmasi kandidat draft (*Draft Mode*, khusus Hard) |
+| `I` | Tampilkan panel *Live ML Analysis* |
+| `Esc` | Membuka dialog konfirmasi kembali ke pemilihan *grid* |
+| `F5` | *Logout* dan kembali ke layar Login |
+
+### Kontrol Mouse
+
+- **Klik kiri sel** - Memilih sel tersebut
+- **Tombol Numpad** - Memasukkan angka (tombol otomatis nonaktif jika angka sudah penuh ditempatkan)
+- **Tombol ⌫ Delete** - Menghapus isi sel yang dipilih
+- **Tombol 💡 HINT** - Menggunakan satu nyawa untuk mengungkap nilai benar sel yang dipilih
+- **Tombol 🤖 Solve** - Menyaksikan AI menyelesaikan game secara *stey-by-step*
+- **Tombol ⚡ Auto (khusus Hard)** - Mengisi semua tanda kandidat pensil secara otomatis (pengurangan 50 poin per penggunaan)
+
+### Aturan Permainan
+
+- Setiap baris, kolom, dan kotak kecil harus berisi masing-masing angka tepat satu kali.
+- Penempatan yang salah menghabiskan satu nyawa (♥). Kehilangan semua nyawa mengakhiri sesi.
+- Easy dan Normal memperbolehkan maksimal 5 error, Hard maksimal 3 error. Batas ini bersifat adaptif berdasarkan tipe pemain.
+- Tombol `HINT` di mode Hard juga menambah hitungan *auto-used* yang memengaruhi skor.
+- Skor akhir dihitung dari efisiensi waktu, tingkat *error*, penggunaan hint, dan pengali *difficulty*.
+
+### Formula Skor
+
+```
+`skor = (time_score - error_penalty - behavior_penalty - hint_penalty - auto_penalty) x difficulty_multiplier`
+
+keterangan:
+  `time_score`       = max(0, 1000 - (total_waktu / player_cells) x 10)
+  `error_penalty`    = min(350, (errors / player_cells) x 500)
+  `behavior_penalty` = guessing x 25 + near_miss x 8
+  `hint_penalty`     = hints_used x 200
+  `auto_penalty`     = auto_used x 50
+  `difficulty_mult`  = Easy: 1.0 / Normal: 1.8 / Hard: 3.0
+```
 
 ---
 
-## Data Pemain
+## 📦 ***Output Files***
 
-Data seluruh pemain disimpan lokal dalam `player_data.json` di direktori yang sama dengan `Sudoku.py`. Struktur utamanya:
+### `player_data.json`
+
+Dibuat otomatis di *root* proyek setelah sesi pertama. Menyimpan seluruh data pemain menggunakan penulisan atomik (tulis ke `.tmp` lalu `os.replace`).
 
 ```json
 {
   "players": {
-    "<username>": {
+    "samuel": {
+      "created_at": 1748000000.0,
+      "tutorial_done": true,
+      "achievements": ["pemula_berhasil", "kilat", "tanpa_cela"],
       "sessions": [
         {
+          "username": "samuel",
+          "timestamp": 1748000100.0,
           "difficulty": "Normal",
           "grid_size": 3,
-          "total_time": 312.5,
-          "moves": 45,
-          "errors": 2,
-          "hints_used": 1,
-          "completed": true,
-          "score": 680,
+          "total_time": 187.4,
+          "moves": 42,
+          "errors": 1,
+          "hints_used": 0,
+          "auto_used": 0,
           "near_miss": 1,
-          "guessing": 0
+          "guessing": 0,
+          "completed": true,
+          "score": 820,
+          "empty_cells": 41,
+          "time_per_cell": 4.46,
+          "hearts_left": 4,
+          "max_hearts": 9,
+          "max_errors": 5,
+          "lose_reason": null
         }
-      ],
-      "achievements": ["pemula_berhasil", "tanpa_cela"]
+      ]
     }
   }
 }
 ```
 
-File ini juga digunakan sebagai data nyata untuk proses *continuous learning*. Artinya model akan di-retrain secara inkremental di latar belakang setiap kali sesi baru selesai dan disimpan.
+Field sesi utama: `timestamp`, `difficulty`, `grid_size`, `total_time`, `moves`, `errors`, `hints_used`, `auto_used`, `near_miss`, `guessing`, `completed`, `score`, `empty_cells`, `time_per_cell`, `hearts_left`, `max_hearts`, `max_errors`, `lose_reason`.
+
+### Folder `Card/`
+
+Gambar PNG kartu skor diekspor ke sini ketika pemain menekan **🖼 SIMPAN SCORECARD** di *Performance Dashboard*.
+
+- Format nama file: `SudokuAI_{username}_{unix_timestamp}.png`
+- Lebar: 860px (tinggi menyesuaikan konten)
+- Dibuat seluruhnya dengan `Pillow` tanpa font eksternal atau template tambahan
+- Konten kartu: nama pemain, statistik sesi, badge tipe pemain, progress bar kemampuan, jumlah pencapaian, dan pesan rekomendasi AI
 
 ---
 
-## Training Ulang Model
+## 🏅 ***Achievements***
 
-Jika ingin melatih ulang model dari awal, buka dan jalankan notebook sesuai urutan berikut:
+Game melacak 20 *badge achievements* yang tersebar dalam 6 tier. Setiap *badge* disimpan berdasarkan ID-nya di `player_data.json` dan ditampilkan di *Performance Dashboard*.
 
-1. `Model_Classify_Player.ipynb` → `Player_Classifier.pkl`
-2. `Model_Anomaly_Detection.ipynb` → `Detect_Anomaly.pkl`
-3. `Model_Score_Prediction.ipynb` → `Score_Prediction.pkl`
-4. `Model_Difficulty_Recommender.ipynb` → `Difficulty_Recommender.pkl`
-5. `Model_Performance_Prediction.ipynb` → `Performance_Prediction.pkl`
-6. `Model_Hint_Timer.ipynb` → `Hint_Timer.pkl`
+<details>
+<summary><strong>View all 20 achievements</strong></summary>
 
-Semua notebook menggunakan data sintetis yang di-*generate* secara internal. Jika `player_data.json` sudah berisi cukup data nyata, notebook `Model_Difficulty_Recommender` dan `Model_Score_Prediction` juga dapat dilatih menggunakan data tersebut.
+| Badge | ID | Kondisi Unlock |
+|---|---|---|
+| 🟢 `First Win` | `pemula_berhasil` | Selesaikan *puzzle* pertamamu |
+| 🟠 `Marathon` | `maraton` | Selesaikan total 10 sesi |
+| 🟣 `Veteran` | `veteran` | Selesaikan total 25 sesi |
+| 🔴 `Consistent` | `konsisten` | Selesaikan 3 sesi berturut-turut |
+| 🟣 `Unbeatable` | `tak_terkalahkan` | Selesaikan 5 sesi berturut-turut |
+| 🟣 `Serial Winner` | `serial_winner` | Selesaikan 7 sesi berturut-turut |
+| 🟠 `Comeback` | `comeback` | Selesaikan sesi setelah sesi sebelumnya gagal |
+| 🟡 `Lightning` | `kilat` | Selesaikan 4x4 dalam waktu di bawah 60 detik |
+| 🟡 `Speed Flash` | `cepat_kilat` | Selesaikan 4x4 dalam waktu di bawah 30 detik |
+| 🔵 `Speed Demon` | `speed_demon` | Selesaikan 9x9 dalam waktu di bawah 5 menit |
+| 🔵 `No Hints` | `tanpa_petunjuk` | Selesaikan tanpa menggunakan satu pun *hint* atau *auto* |
+| 🟣 `Flawless` | `tanpa_cela` | Selesaikan tanpa satu pun *error* |
+| 🟡 `Perfect` | `sempurna` | Selesaikan tanpa *error* dan tanpa *hint* |
+| 🟢 `Efficient` | `efisien` | Selesaikan dengan kurang dari 3 *error* |
+| 🔴 `Hard Expert` | `ahli_hard` | Selesaikan *puzzle* Hard |
+| 🔴 `Iron Will` | `tanpa_menyerah_hard` | Selesaikan Hard tanpa satu pun *hint* atau *auto* |
+| 🟣 `Master 9x9` | `master_9x9` | Selesaikan *puzzle* 9x9 |
+| 🔵 `Explorer` | `explorer` | Mainkan ketiga tingkat kesulitan |
+| 🟡 `Genius` | `jenius` | Raih skor di atas 800 dalam satu sesi |
+| 🔴 `Expert` | `pakar` | Raih skor di atas 500 di mode Hard |
 
-Install dependensi tambahan untuk notebook:
-
-```bash
-pip install pandas seaborn scipy xgboost lightgbm notebook
-```
-
----
-
-## Mode Demo
-
-Jika lingkungan tidak mendukung pemuatan model `.pkl` (misalnya saat pameran tanpa koneksi atau dependensi tidak lengkap), aktifkan **Demo Mode** di baris berikut pada `Sudoku.py`:
-
-```python
-DEMO_MODE = True  # baris ~295 di Sudoku.py
-```
-
-Saat `DEMO_MODE = True`, seluruh prediksi ML mengembalikan nilai *fallback* yang aman tanpa memanggil model `sklearn`, sehingga presentasi tetap berjalan lancar.
-
----
-
-## Kredit Akademik
-
-Proyek ini dikembangkan untuk memenuhi kebutuhan:
-
-- **Ujian Akhir Semester (UAS)** Mata Kuliah *Machine Learning for Intelligence System*
-- **Pameran Karya Mahasiswa** Universitas Bunda Mulia
-- **Pendaftaran HAKI** sebagai Ciptaan Program Komputer
-
-| Detail | Informasi |
-|--------|-----------|
-| Penulis | Samuel Lie |
-| Institusi | Universitas Bunda Mulia (UBM) |
-| Program Studi | Data Science |
-| Mata Kuliah | Machine Learning for Intelligence System |
-| Dosen Pengampu | Puguh Hiskiawan, S.Si., M.Si., Ph.D. |
-| Tahun | 2026 |
+</details>
 
 ---
 
-## Hak Cipta
+## 🛠️ ***Tech Stack***
 
-**Copyright &copy; 2026 Samuel Lie. Seluruh hak dilindungi.**
+<div align="center">
 
-Karya ini diajukan untuk pendaftaran **Hak Kekayaan Intelektual (HAKI)** sebagai Ciptaan Program Komputer. Dilarang keras menyalin, mendistribusikan, atau memodifikasi kode, aset, atau model dalam repositori ini tanpa izin tertulis dari penulis.
+[![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![tkinter](https://img.shields.io/badge/tkinter-GUI%20Framework-4A90D9?style=flat-square)](https://docs.python.org/3/library/tkinter.html)
+[![pygame](https://img.shields.io/badge/pygame-Audio%20%26%20SFX-1A1A2E?style=flat-square)](https://pygame.org)
+[![scikit-learn](https://img.shields.io/badge/scikit--learn-ML%20Models-F7931E?style=flat-square&logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
+[![NumPy](https://img.shields.io/badge/NumPy-Array%20%26%20SFX%20Engine-013243?style=flat-square&logo=numpy&logoColor=white)](https://numpy.org)
+[![Pillow](https://img.shields.io/badge/Pillow-Image%20%26%20Score%20Card-11557C?style=flat-square)](https://pillow.readthedocs.io)
+[![Matplotlib](https://img.shields.io/badge/Matplotlib-Performance%20Charts-11557C?style=flat-square)](https://matplotlib.org)
+[![OpenCV](https://img.shields.io/badge/OpenCV-Easter%20Egg%20Video-5C3EE8?style=flat-square&logo=opencv&logoColor=white)](https://opencv.org)
+[![XGBoost](https://img.shields.io/badge/XGBoost-Score%20Prediction%20Benchmark-FF6600?style=flat-square)](https://xgboost.readthedocs.io)
+[![LightGBM](https://img.shields.io/badge/LightGBM-Score%20Prediction%20Benchmark-02A388?style=flat-square)](https://lightgbm.readthedocs.io)
+[![pandas](https://img.shields.io/badge/pandas-Data%20Analysis-150458?style=flat-square&logo=pandas&logoColor=white)](https://pandas.pydata.org)
+[![seaborn](https://img.shields.io/badge/seaborn-Notebook%20Viz-4C72B0?style=flat-square)](https://seaborn.pydata.org)
+[![scipy](https://img.shields.io/badge/scipy-Statistical%20Distributions-8CAAE6?style=flat-square)](https://scipy.org)
 
-> *This work is submitted for Intellectual Property Rights (HAKI) registration as a Computer Program Creation. Unauthorized copying, distribution, or modification of any code, asset, or model in this repository is strictly prohibited without written permission from the author.*
+</div>
+
+---
+
+## 🥚 ***Easter Egg***
+
+<details>
+<summary><strong>Click to reveal the hidden feature</strong></summary>
+
+Pada tampilan Login, **klik logo sebanyak 7 kali dalam waktu 4 detik**.
+
+Jika berhasil dipicu:
+
+1. `Assets/easter_egg.mp3` diputar menggunakan `pygame` sebagai audio.
+2. Jika `opencv-python` dan `Pillow` keduanya terinstal, `Assets/easter_egg.mp4` dirender *frame-per-frame* langsung di dalam tampilan `tkinter` sebagai *overlay* video layar penuh.
+3. Jika file video tidak ditemukan, animasi *fallback* ditampilkan sebagai gantinya.
+4. Sembarang penekanan tombol atau klik *mouse* akan menutup *overlay*.
+
+*Easter egg counter* direset jika jeda antar klik lebih dari 4 detik.
+
+</details>
+
+---
+
+## 🎓 ***Academic Information***
+
+<div align="center">
+
+| Keterangan | Detail |
+|---|---|
+| **Nama Proyek** | SUDOKU AI |
+| **Versi** | 1.0.0 |
+| **Program Studi** | Sains Data |
+| **Fakultas** | Fakultas Teknologi & Desain |
+| **Universitas** | Universitas Bunda Mulia Kampus Serpong |
+| **Mata Kuliah** | *Machine Learning for Intelligence System* |
+| **Dosen Pengampu** | Puguh Hiskiawan., S.Si., M.Si., Ph.D. |
+| **Tahun** | 2026 |
+
+</div>
+
+> Proyek ini diajukan sebagai karya Ujian Akhir Semester (UAS) untuk mata kuliah Machine Learning for Intelligence System. Proses pendaftaran Hak Kekayaan Intelektual (HAKI) sebagai Ciptaan Program Komputer sedang dalam proses.
+
+---
+
+<div align="center">
+
+*Made with 🧠 and ♥ by **Samuel Lie***
+Universitas Bunda Mulia · 2026
+
+</div>

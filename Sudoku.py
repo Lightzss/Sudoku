@@ -6,14 +6,10 @@
 # Deskripsi      : Game Sudoku berbasis Python dengan integrasi model ML untuk
 #                  rekomendasi kesulitan, deteksi anomali, prediksi skor, dan
 #                  klasifikasi tipe pemain secara adaptif.
-# Penulis        : Samuel Lie
 # Institusi      : Universitas Bunda Mulia
 # Mata Kuliah    : Machine Learning for Intelligence System
 # Dosen Pengampu : Puguh Hiskiawan., S.Si., M.Si., Ph.D.
 # Tahun          : 2026
-# Hak Cipta      : (c) 2026 Samuel Lie. Seluruh hak dilindungi.
-#                  Karya ini diajukan untuk pendaftaran HAKI sebagai
-#                  Ciptaan Program Komputer.
 # Teknologi      : Python 3, tkinter, pygame, scikit-learn, Pillow, NumPy
 # Dependensi     : Lihat requirements.txt
 # =============================================================================
@@ -30,6 +26,7 @@ import json
 import time
 import copy
 import pickle
+import queue
 import random
 import threading
 import subprocess
@@ -60,7 +57,6 @@ except ImportError:
 try:
     from sklearn.neighbors import KNeighborsClassifier
     from sklearn.ensemble import (IsolationForest, RandomForestClassifier,
-                                  RandomForestRegressor,
                                   HistGradientBoostingRegressor)
     from sklearn.multioutput import MultiOutputRegressor
     from sklearn.preprocessing import StandardScaler
@@ -75,8 +71,7 @@ except ImportError:
     cv2 = None
     CV2_AVAILABLE = False
 
-# ML continuous-improvement helpers
-_ml_retrain_lock = threading.Lock() # prevent concurrent retrains
+_ml_retrain_lock = threading.Lock() # Mencegah dua proses retrain berjalan bersamaan
 
 # [DEMO-POINT] Continuous learning - retrain di background thread
 # Menjadwalkan retrain model ML di background thread setelah sesi terbaru tersimpan, sambil mencegah dua proses retrain berjalan bersamaan.
@@ -1767,12 +1762,12 @@ def _ml_aggregate_vector(sessions):
               s.get("total_time", 0.0) / max(s.get("empty_cells",
                                                      max(s.get("moves", 1), 1)), 1))
         for s in sessions) / n
-    er       = sum(s.get("errors", 0.0)     / max(s.get("moves", 1), 1) for s in sessions) / n
-    hr       = sum(s.get("hints_used", 0.0) / max(s.get("moves", 1), 1) for s in sessions) / n
-    cr       = sum(1.0 for s in sessions if s.get("completed", False)) / n
+    er        = sum(s.get("errors", 0.0)     / max(s.get("moves", 1), 1) for s in sessions) / n
+    hr        = sum(s.get("hints_used", 0.0) / max(s.get("moves", 1), 1) for s in sessions) / n
+    cr        = sum(1.0 for s in sessions if s.get("completed", False)) / n
     total_err = sum(s.get("errors", 0) for s in sessions) or 1
-    nmr      = sum(s.get("near_miss", 0) for s in sessions) / total_err
-    gur      = sum(s.get("guessing", 0)  for s in sessions) / total_err
+    nmr       = sum(s.get("near_miss", 0) for s in sessions) / total_err
+    gur       = sum(s.get("guessing", 0)  for s in sessions) / total_err
     avg_moves = sum(s.get("moves", 0)    for s in sessions) / n
     avg_score = sum(float(s.get("score", 0) or 0) for s in sessions) / n
     return [float(tpc), float(er), float(hr), float(cr),
@@ -3516,7 +3511,7 @@ class GridSizeScreen(tk.Frame):
                 "tag": "PEMULA", "cta": "MULAI 4 × 4",
                 "cells": self._SAMPLE_4,
                 "features": [
-                    ("🎯", "Angka 1 – 4"),
+                    ("🎯", "Angka 1 - 4"),
                     ("⚡", "Selesai dalam menit"),
                     ("🎓", "Sempurna untuk pemula"),
                     ("😊", "Aturan mudah dipahami"),
@@ -3528,7 +3523,7 @@ class GridSizeScreen(tk.Frame):
                 "tag": "KLASIK", "cta": "MULAI 9 × 9",
                 "cells": self._SAMPLE_9,
                 "features": [
-                    ("🎯", "Angka 1 – 9"),
+                    ("🎯", "Angka 1 - 9"),
                     ("🧠", "Butuh logika & strategi"),
                     ("🏆", "Format Sudoku resmi"),
                     ("🔥", "Tantangan sesungguhnya"),
@@ -10660,6 +10655,15 @@ class EasterEggOverlay(tk.Toplevel):
         self._tick      = 0
         self._particles = []
         self._stars     = []
+        self._frame_queue       = None
+        self._video_thread      = None
+        self._audio_duration_ms = 0
+        self._frame_delay_ms    = 33
+        self._canvas_vid_id     = None
+        self._vid_nw            = 0
+        self._vid_nh            = 0
+        self._vid_x0            = 0
+        self._vid_y0            = 0
 
         sw = master.winfo_screenwidth()
         sh = master.winfo_screenheight()
@@ -10692,13 +10696,15 @@ class EasterEggOverlay(tk.Toplevel):
             width=sw, height=sh,
         )
         self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Button-1>", self._close)
+        self.bind("<Button-1>", self._close)
 
     # Audio
     # Memulai audio pada EasterEggOverlay dan menyalakan mekanisme pendukung yang dibutuhkan.
     def _start_audio(self):
         if not PYGAME_AVAILABLE:
             return
-        self._egg_sound_obj     = None
+        self._egg_sound_obj      = None
         self._music_was_replaced = False
 
         try:
@@ -10709,15 +10715,19 @@ class EasterEggOverlay(tk.Toplevel):
         if os.path.exists(_EASTER_EGG_AUDIO):
             try:
                 snd = pygame.mixer.Sound(_EASTER_EGG_AUDIO)
-                snd.set_volume(0.3)
+                dur_ms = int(snd.get_length() * 1000)
+                self._audio_duration_ms = dur_ms
+                snd.set_volume(0.85)
                 snd.play()
                 self._egg_sound_obj = snd
+                if dur_ms > 0:
+                    self.after(dur_ms, self._close)
                 return
             except Exception:
                 pass
             try:
                 pygame.mixer.music.load(_EASTER_EGG_AUDIO)
-                pygame.mixer.music.set_volume(0.3)
+                pygame.mixer.music.set_volume(0.85)
                 pygame.mixer.music.play(loops=0)
                 self._music_was_replaced = True
             except Exception:
@@ -10739,43 +10749,96 @@ class EasterEggOverlay(tk.Toplevel):
     # Video mode
     # Memulai video pada EasterEggOverlay dan menyalakan mekanisme pendukung yang dibutuhkan.
     def _start_video(self):
+        _MAX_W, _MAX_H = 1280, 720
         self._cap = cv2.VideoCapture(VIDEO_EASTER_EGG)
         fps = self._cap.get(cv2.CAP_PROP_FPS) or 30
-        self._frame_delay = max(16, int(1000 / fps))
-        self._draw_banner()
-        self._play_video_frame()
+        self._frame_delay_ms = max(16, int(1000 / fps))
+        _total = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._total_frames = _total if _total > 0 else None
+        self._current_frame = 0
 
-    # Menangani proses play video frame pada EasterEggOverlay sambil menjaga state internal tetap konsisten.
-    def _play_video_frame(self):
-        if not self._running or self._cap is None:
-            return
-        _PIL_Image, _PIL_ImageTk = _PilImage, _PilImageTk
-
-        ret, frame = self._cap.read()
-        if not ret:
-            self._close()
-            return
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w = frame_rgb.shape[:2]
+        vw = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self._sw
+        vh = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self._sh
         sw, sh = self._sw, self._sh
+        scale = min(sw / vw, sh / vh, _MAX_W / vw, _MAX_H / vh)
+        nw = max(1, int(vw * scale))
+        nh = max(1, int(vh * scale))
+        self._vid_nw = nw
+        self._vid_nh = nh
+        self._vid_x0 = (sw - nw) // 2
+        self._vid_y0 = (sh - nh) // 2
 
-        scale = min(sw / w, sh / h)
-        nw, nh = int(w * scale), int(h * scale)
-        frame_resized = cv2.resize(frame_rgb, (nw, nh))
+        placeholder = _PilImage.new("RGB", (nw, nh), (0, 0, 0))
+        self._photo_ref = _PilImageTk.PhotoImage(placeholder)
+        self._canvas_vid_id = self.canvas.create_image(
+            self._vid_x0, self._vid_y0, anchor="nw",
+            image=self._photo_ref, tags="video_frame")
+        self._frame_queue = queue.Queue(maxsize=8)
+        self._draw_banner()
+        self._video_thread = threading.Thread(
+            target=self._read_frames_bg, daemon=True)
+        self._video_thread.start()
+        self._display_next_frame()
 
-        img = _PIL_Image.fromarray(frame_resized)
-        self._photo_ref = _PIL_ImageTk.PhotoImage(img)
+    # Menangani proses baca frame di background thread agar main thread tidak diblokir.
+    def _read_frames_bg(self):
+        nw    = self._vid_nw
+        nh    = self._vid_nh
+        fq    = self._frame_queue
+        cap   = self._cap
+        total = self._total_frames
+        cur   = 0
+        while self._running and cap is not None:
+            if total is not None and cur >= total:
+                try:
+                    fq.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+            ret, frame = cap.read()
+            if not ret:
+                try:
+                    fq.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+            cur += 1
+            self._current_frame = cur
+            frame_rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_resized = cv2.resize(frame_rgb, (nw, nh),
+                                       interpolation=cv2.INTER_LINEAR)
+            img = _PilImage.fromarray(frame_resized)
+            try:
+                fq.put(img, timeout=0.2)
+            except queue.Full:
+                pass
 
-        x0 = (sw - nw) // 2
-        y0 = (sh - nh) // 2
-        self.canvas.delete("video_frame")
-        self.canvas.create_image(x0, y0, anchor="nw",
-                                 image=self._photo_ref, tags="video_frame")
+    # Menangani proses display frame di main thread dari antrian yang diisi background thread.
+    def _display_next_frame(self):
+        if not self._running:
+            return
+        t0 = time.perf_counter()
+        try:
+            img = self._frame_queue.get_nowait()
+        except queue.Empty:
+            self._frame_job = self.after(2, self._display_next_frame)
+            return
+
+        if img is None:
+            if self._audio_duration_ms == 0:
+                self._close()
+            return
+
+        old_photo       = self._photo_ref
+        self._photo_ref = _PilImageTk.PhotoImage(img)
+        self.canvas.itemconfig(self._canvas_vid_id, image=self._photo_ref)
         self.canvas.tag_raise("banner")
+        del old_photo
 
         if self._running:
-            self._frame_job = self.after(self._frame_delay, self._play_video_frame)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            delay      = max(1, self._frame_delay_ms - elapsed_ms)
+            self._frame_job = self.after(delay, self._display_next_frame)
 
     # Menggambar banner pada EasterEggOverlay sesuai state yang sedang aktif.
     def _draw_banner(self):
@@ -10944,6 +11007,13 @@ class EasterEggOverlay(tk.Toplevel):
                 except Exception:
                     pass
 
+        if self._frame_queue is not None:
+            try:
+                while not self._frame_queue.empty():
+                    self._frame_queue.get_nowait()
+            except Exception:
+                pass
+
         if self._cap:
             try:
                 self._cap.release()
@@ -10956,7 +11026,7 @@ class EasterEggOverlay(tk.Toplevel):
                     self._egg_sound_obj.stop()
                 except Exception:
                     pass
-            else:
+            elif getattr(self, '_music_was_replaced', False):
                 try:
                     pygame.mixer.music.stop()
                 except Exception:

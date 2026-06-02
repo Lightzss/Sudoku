@@ -4400,7 +4400,6 @@ class LeaderboardWindow(tk.Frame):
         # Menangani event enter pada LeaderboardWindow dan memperbarui state yang terkait.
         def _on_enter(e, c=cv, b=bg):
             c.configure(bg=self._pal["row_hover"])
-            c.itemconfigure("all", fill="")
         # Menangani event leave pada LeaderboardWindow dan memperbarui state yang terkait.
         def _on_leave(e, c=cv, b=bg):
             c.configure(bg=b)
@@ -6638,10 +6637,17 @@ class GameScreen(tk.Frame):
 
         if self.draft_mode and self.difficulty == "Hard":
             cands = self.draft_board.pop((r, c), set())
-            self._draw_board()
             if cands:
+                self._draw_board()
                 self.status_var.set(
                     f"✗ Kandidat {sorted(cands)} dihapus dari ({r+1},{c+1})")
+                return
+            if self.current_board[r][c] != 0:
+                self.current_board[r][c] = 0
+                self.last_action = time.time()
+                self._update_numpad()
+                self._draw_board()
+                self.status_var.set(f"✗ Angka dikonfirmasi dihapus dari ({r+1},{c+1})")
             else:
                 self.status_var.set(f"ℹ Tidak ada kandidat di ({r+1},{c+1})")
             return

@@ -3355,7 +3355,10 @@ class LoginScreen(tk.Frame):
             while _root and not isinstance(_root, tk.Tk):
                 _root = getattr(_root, "master", None)
             if _root:
+                self._egg_clicks  = 0
+                self._egg_last_ts = 0.0
                 _trigger_easter_egg(_root)
+
 # SCREEN: GRID SIZE SELECT  (Redesigned v3 - bulletproof layout)
 class GridSizeScreen(tk.Frame):
     """
@@ -4400,6 +4403,7 @@ class LeaderboardWindow(tk.Frame):
         # Menangani event enter pada LeaderboardWindow dan memperbarui state yang terkait.
         def _on_enter(e, c=cv, b=bg):
             c.configure(bg=self._pal["row_hover"])
+        
         # Menangani event leave pada LeaderboardWindow dan memperbarui state yang terkait.
         def _on_leave(e, c=cv, b=bg):
             c.configure(bg=b)
@@ -10687,8 +10691,8 @@ class EasterEggOverlay(tk.Toplevel):
         self._start_audio()
         self._start_content()
 
-        self.bind("<Escape>", self._close)
-        self.bind("<Key>",    self._on_key)
+        # Binding keyboard sengaja tidak dipasang selama overlay berjalan.
+        # Overlay hanya tutup otomatis (audio habis / video selesai / timer fallback).
         self.focus_force()
 
     # UI skeleton
@@ -10702,8 +10706,7 @@ class EasterEggOverlay(tk.Toplevel):
             width=sw, height=sh,
         )
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Button-1>", self._close)
-        self.bind("<Button-1>", self._close)
+        # Binding klik sengaja tidak dipasang — overlay hanya tutup otomatis.
 
     # Audio
     # Memulai audio pada EasterEggOverlay dan menyalakan mekanisme pendukung yang dibutuhkan.
@@ -10887,6 +10890,8 @@ class EasterEggOverlay(tk.Toplevel):
         ]
         random.seed()
         self._anim_tick()
+        if self._audio_duration_ms == 0:
+            self.after(12000, self._close)
 
     # Menangani proses anim tick pada EasterEggOverlay sambil menjaga state internal tetap konsisten.
     def _anim_tick(self):
@@ -10978,7 +10983,7 @@ class EasterEggOverlay(tk.Toplevel):
             _tip_col = "#555555" if _CURRENT_THEME_NAME == "dark" else C_TEXT_DIM
             self.canvas.create_text(
                 cx, sh - 50,
-                text="[ Klik di mana saja atau tekan ESC untuk menutup ]",
+                text="[ Easter egg akan menutup otomatis setelah selesai ]",
                 font=("Segoe UI", 13),
                 fill=_tip_col, anchor="center", tags="fx",
             )

@@ -58,7 +58,7 @@ Semua data pemain tersimpan persisten di `player_data.json`. Kartu skor diekspor
 - ***KNN Player Classifier*** : Mengklasifikasikan riwayat sesi ke dalam 5 tipe pemain beserta persentase keyakinannya 
 - ***HistGradientBoosting Score Predictor*** : Memprediksi skor yang akan dicapai pemain di sesi berikutnya berdasarkan tren terbaru
 - ***IsolationForest Anomaly Detector*** : Mendeteksi sesi yang menyimpang secara signifikan dari pola normal pemain
-- ***RandomForest Difficulty Recommender*** : Merekomendasikan Easy / Normal / Hard beserta alasannya, ditampilkan sebagai badge AI pada tampilan *Difficulty Selection*
+- ***RandomForest Difficulty Recommender*** : Merekomendasikan Easy / Normal / Hard beserta alasannya, ditampilkan sebagai *badge* AI pada tampilan *Difficulty Selection*
 - ***MultiOutputRegressor Performance Profiler*** : Memprediksi 11 dimensi kemampuan sekaligus (`speed index`, `accuracy index`, `consistency index`, `independence index`, dan 7 target metrik mentah)
 - ***GradientBoosting Hint Timer*** : Menghitung ambang batas *idle* adaptif (8 hingga 120 detik) sebelum *hint* ditawarkan, menggunakan 15 fitur terrekayasa termasuk `log_tpc`, `err_x_hint`, `hint_pressure`, dan `patience_proxy`
 - ***Continuous learning*** : Model dilatih ulang di *background daemon thread* setelah setiap sesi selesai menggunakan `player_data.json` terbaru, dan hanya disimpan jika CV score baru mengalahkan model sebelumnya
@@ -310,7 +310,7 @@ Gambar PNG kartu skor diekspor ke sini ketika pemain menekan **🖼 SIMPAN SCORE
 - Format nama file: `SudokuAI_{username}_{unix_timestamp}.png`
 - Lebar: 860px (tinggi menyesuaikan konten)
 - Dibuat seluruhnya dengan `Pillow` tanpa font eksternal atau template tambahan
-- Konten kartu: nama pemain, statistik sesi, badge tipe pemain, progress bar kemampuan, jumlah pencapaian, dan pesan rekomendasi AI
+- Konten kartu: nama pemain, statistik sesi, *badge* tipe pemain, progress bar kemampuan, jumlah pencapaian, dan pesan rekomendasi AI
 
 ---
 
@@ -321,7 +321,7 @@ Game melacak 20 *badge achievements* yang tersebar dalam 6 tier. Setiap *badge* 
 <details>
 <summary><strong>View all 20 achievements</strong></summary>
 
-| Badge | ID | Kondisi Unlock |
+| *Badge* | ID | Kondisi *Unlock* |
 |---|---|---|
 | 🟢 `First Win` | `pemula_berhasil` | Selesaikan *puzzle* pertamamu |
 | 🟠 `Marathon` | `maraton` | Selesaikan total 10 sesi |

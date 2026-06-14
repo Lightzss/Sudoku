@@ -2121,128 +2121,40 @@ def _ml_predict_profile(self, session=None):
             "independence_index": float(max(0.0, min(100.0, 100.0 - hr * 120.0))),
         }
 
-# Memberi rekomendasi tantangan berikutnya berdasarkan performa terakhir dan status pemain.
+# Memberi rekomendasi tantangan berikutnya berdasarkan prediksi RandomForestClassifier.
 def _ml_recommend_next_challenge(self):
-    latest = self.sessions[-1] if self.sessions else None
-    if latest is None:
+    if not self.sessions:
         return {
             "difficulty": "Easy",
             "grid_size": 2,
             "confidence": 0.0,
-            "reason": "belum ada riwayat",
+            "reason": "Belum ada riwayat, mulai dari Easy dulu.",
         }
 
-    profile = _ml_predict_profile(self, latest)
     pred_diff, pred_conf = _ml_predict_difficulty(self)
 
+    if pred_diff is None:
+        pred_diff, pred_conf = "Easy", 50.0
+
+    latest = self.sessions[-1]
     grid = int(latest.get("grid_size", 3) or 3)
     completed = bool(latest.get("completed", False))
-    score = float(latest.get("score", 0) or 0)
-    tpc = float(latest.get("time_per_cell", latest.get("total_time", 0.0) / max(latest.get("moves", 1), 1)))
-    errors = int(latest.get("errors", 0))
-    hints = int(latest.get("hints_used", 0))
-    max_hearts = int(latest.get("max_hearts", grid * grid * grid))
-    moves = max(int(latest.get("moves", 1)), 1)
-    error_rate = errors / moves
 
-    try:
-        pt_name, _, _ = _orig_pmle_classify_conf(self)
-    except Exception:
-        pt_name = "Inconsistent"
+    if pred_diff == "Easy":
+        grid_size = 2 if (grid <= 2 or not completed) else 3
+    else:
+        grid_size = 3
 
-    speed_index = float(profile.get("speed_index", 0.0))
-    accuracy_index = float(profile.get("accuracy_index", 0.0))
-    independence_index = float(profile.get("independence_index", 0.0))
-
-    if grid <= 2:
-        if completed and (
-            score >= 180
-            or speed_index >= 45.0
-            or accuracy_index >= 50.0
-            or (tpc <= 12.0 and error_rate <= 0.35 and hints <= max(1, moves // 6))
-            or independence_index >= 45.0
-        ):
-            return {
-                "difficulty": "Normal",
-                "grid_size": 3,
-                "confidence": max(pred_conf, 65.0),
-                "reason": "lulus 2x2, naik ke 3x3",
-            }
-
-        if completed and score >= 90:
-            return {
-                "difficulty": "Normal",
-                "grid_size": 3,
-                "confidence": max(pred_conf, 55.0),
-                "reason": "selesai baik, coba 3x3",
-            }
-
-        return {
-            "difficulty": "Easy",
-            "grid_size": 2,
-            "confidence": max(pred_conf, 50.0),
-            "reason": "perlu stabilisasi di 2x2",
-        }
-
-    hint_heavy = hints >= max(3, max_hearts // 2)
-    if error_rate > 0.30 or hint_heavy or pt_name == "Struggling":
-        if completed and score >= 100:
-            return {
-                "difficulty": "Normal",
-                "grid_size": 3,
-                "confidence": max(pred_conf, 60.0),
-                "reason": "selesai, tapi error rate masih tinggi - kuasai Normal dulu",
-            }
-        elif completed:
-            return {
-                "difficulty": "Easy",
-                "grid_size": 3,
-                "confidence": max(pred_conf, 55.0),
-                "reason": "banyak kesalahan, coba Easy 3×3 untuk membangun ritme",
-            }
-        else:
-            return {
-                "difficulty": "Easy",
-                "grid_size": 2,
-                "confidence": max(pred_conf, 55.0),
-                "reason": "belum selesai dan banyak error - turun dulu ke 2×2",
-            }
-
-    if completed and (
-        score >= 650
-        and error_rate <= 0.15
-        and hints <= max(1, moves // 8)
-    ):
-        return {
-            "difficulty": "Hard",
-            "grid_size": 3,
-            "confidence": max(pred_conf, 70.0),
-            "reason": "performa sangat baik, siap tantangan lebih berat",
-        }
-
-    if completed and pt_name in ("Speedrunner", "Careful") and (
-        speed_index >= 60.0 or accuracy_index >= 60.0 or independence_index >= 60.0
-    ):
-        return {
-            "difficulty": "Hard",
-            "grid_size": 3,
-            "confidence": max(pred_conf, 65.0),
-            "reason": "siap tantangan yang lebih berat",
-        }
-
-    if (not completed) and (error_rate > 0.35 or hints >= max(2, moves // 4)):
-        return {
-            "difficulty": "Easy",
-            "grid_size": 2,
-            "confidence": max(pred_conf, 55.0),
-            "reason": "turun sebentar untuk pemulihan",
-        }
+    if pred_diff == "Easy" and grid == 3 and grid_size == 2:
+        reason = "Turun ke 2x2, level disesuaikan ke Easy."
+    else:
+        reason = f"Level disesuaikan ke {pred_diff}."
 
     return {
-        "difficulty": "Normal",
-        "grid_size": 3,
-        "confidence": max(pred_conf, 50.0),
-        "reason": "pertahankan ritme saat ini di level Normal",
+        "difficulty": pred_diff,
+        "grid_size": grid_size,
+        "confidence": pred_conf,
+        "reason": reason,
     }
 
 # Memberi rekomendasi tingkat kesulitan yang paling pas untuk pemain saat ini.
@@ -4499,7 +4411,7 @@ class PerformanceDashboard(tk.Frame):
             recommended_grid = 2 if rec == "Easy" else 3
         self.recommended_grid = recommended_grid
         self.recommended_difficulty = stats.get("recommended_difficulty", rec) or rec
-        self.recommended_reason = stats.get("recommended_reason", "") or self._build_recommendation_reason(pt, feat, self.recommended_difficulty)
+        self.recommended_reason = stats.get("recommended_reason", "")
 
         hdr = tk.Frame(self, bg=C_SURFACE)
         hdr.pack(fill="x")
@@ -5213,14 +5125,6 @@ class PerformanceDashboard(tk.Frame):
         else:
             btn.pack(side=side, padx=padx)
         return btn
-
-    # Membangun recommendation reason pada PerformanceDashboard dan menyiapkan widget supaya state tampilan tetap konsisten.
-    def _build_recommendation_reason(self, pt, feat, rec):
-        if rec == "Hard":
-            return "Performa kamu stabil dan cepat. Dashboard mengarah ke tantangan yang lebih padat agar progres tetap naik."
-        if rec == "Normal":
-            return "Keseimbangan kecepatan dan akurasi kamu sudah bagus; level menengah akan menjaga ritme tanpa terasa terlalu mudah."
-        return "Polanya masih cocok untuk eksplorasi ringan. Bangun konsistensi dulu sebelum naik ke tantangan lebih tinggi."
 
     # ACTIONS / UTILS
     # Menyegarkan dashboard pada PerformanceDashboard setelah data atau pilihan pengguna berubah.

@@ -2244,8 +2244,7 @@ def _ml_train_hint_model(self):
         nmr       = s.get("near_miss", 0)  / total_err
         gur       = s.get("guessing", 0)   / total_err
         grid_n    = float(int(s.get("grid_size", 3)) ** 2)
-        diff_int  = float({"Easy": 0, "Normal": 1, "Hard": 2}.get(
-            s.get("difficulty", "Normal"), 1))
+        diff_int  = float({"Easy": 0, "Normal": 1, "Hard": 2}.get(s.get("difficulty", "Normal"), 1))
         orig = [tpc, er, hr, cr, nmr, gur, grid_n, diff_int, 0.5]
         log_tpc        = np.log1p(tpc)
         err_x_hint     = er * hr
@@ -2253,8 +2252,7 @@ def _ml_train_hint_model(self):
         hint_pressure  = hr / (cr + 0.01)
         move_density   = moves / grid_n
         patience_proxy = (1.0 - er) * cr
-        return orig + [log_tpc, err_x_hint, diff_x_grid,
-                       hint_pressure, move_density, patience_proxy]
+        return orig + [log_tpc, err_x_hint, diff_x_grid, hint_pressure, move_density, patience_proxy]
 
     # Fungsi bantu ini memecah logika ml train hint model agar langkah kecilnya lebih rapi dan mudah dipakai ulang di bagian ini.
     def _hint_label(s):
